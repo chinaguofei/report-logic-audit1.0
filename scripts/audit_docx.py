@@ -145,11 +145,27 @@ def check_chapters(blocks):
 
 
 def check_placeholders(blocks):
-    pats = [r"\[\[", r"\{\{", r"TODO", r"XXX", r"PLACEHOLDER", r"待补", r"待填"]
+    """占位符/模板残留检查。
+
+    双括号 {{…}}/[[…]]、显式标记 TODO/XXX/PLACEHOLDER/待补/待填 确定性高 → BLOCK；
+    单花括号字段 {…}（如 {本公司}/{交易日}）、模板「【填空】」标记较泛（可能误伤含花括号的
+    非模板文档）→ SUGGEST，仅作提醒。覆盖 stock 模板的 {字段} 式占位正是这一条补上的。
+    注意：单花括号匹配要求括号内非空且不含花括号自身（1–40 字符）。
+    """
+    rules = [
+        (r"\[\[", "BLOCK", "PH-RESIDUE"),
+        (r"\{\{", "BLOCK", "PH-RESIDUE"),
+        (r"TODO|XXX|PLACEHOLDER", "BLOCK", "PH-RESIDUE"),
+        (r"待补|待填", "BLOCK", "PH-RESIDUE"),
+        (r"\{[^{}]{1,40}\}", "SUGGEST", "PH-BRACE"),
+        (r"【填空", "SUGGEST", "PH-FILL"),
+    ]
     for kind, text, style in blocks:
-        for p in pats:
-            if re.search(p, text, re.I):
-                add("BLOCK", "PH-RESIDUE", text[:40], f"占位符残留：{p}", "内容/图片/变量未替换")
+        for pat, lvl, code in rules:
+            m = re.search(pat, text, re.I)
+            if m:
+                add(lvl, code, text[:40], f"疑似占位符残留：{m.group(0)[:30]}",
+                    "模板字段/填空标记未替换，请核对是否全文填完")
                 break
 
 

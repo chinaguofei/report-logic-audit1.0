@@ -1,0 +1,462 @@
+---
+name: stock-research-report
+description: 生成 A 股/港股上市公司个股研报分析 .docx（**十章固定结构 + 12 张图 + 4 张表**：概况/研报共识/核心逻辑/16季财务矩阵+财务质量甄别/行业景气度(含TAM·六维·产业链·订单)/行业均值vs公司/同业对标(双口径前5)/技术分析与估值(K线·季节性·PS-PB通道·三情景)/小结/风险提示）。当用户要求"出一份 XX 的研报分析""按模版做研报""研究一下某只股票"或给出股票代码/名称要求分析时使用。This skill should be used whenever the user asks for a stock research report (研报分析) for a listed company, or asks to follow the established report template.
+agent_created: true
+---
+
+# 上市公司研报分析生成
+
+按用户已定稿的模板生成个股研报 `.docx`，输出到 `C:\Users\何亚轩\Desktop\WB\`。
+
+**核心原则：除非用户明确说要改动，一律按本技能既定规格出，不得自行增删章节、行、图表元素。**
+
+> 本技能是用户「个人需求总台」的 **P01** 条目。
+> 总台入口：`~/.workbuddy/personal/README.md`（查询/登记个人需求用技能 `personal-workbench`）。
+> 规格变更后需同步更新总台台账的「规格变更记录」。
+
+## 何时使用
+
+用户说以下任意一种，即触发：
+- "出一份 {公司} 的研报分析" / "按刚才的模版出一份 {代码}"
+- "研究一下 {股票}" / "帮我分析 {代码}"
+- "像上次一样做一份 {公司} 研报"
+
+## 交付物
+
+- 路径：`C:\Users\何亚轩\Desktop\WB\{公司简称}{代码}研报分析.docx`
+- 结构：**十章 + 4 张表 + 12 张图**（2026-10-27 定稿，母版＝海目星 688559 版）
+  - 十章：①概况与最新行情 ②研报共识 ③核心逻辑 ④16季财务矩阵（含财务质量甄别）⑤行业景气度（7 小节）⑥行业均值 vs 公司 ⑦同业对标（双口径前 5）⑧技术分析与估值（5 小节）⑨小结 ⑩风险提示
+  - 4 表：研报共识 / 16 季矩阵 / 同业前5（主业口径）/ 同业前5（工艺邻接口径）
+  - 12 图：图1 增速折线 · 图2 利润瀑布 · 图3 TAM · 图4 六维打分 · 图5 产业链 · 图6 订单全景 · 图7 行业均值(主口径) · 图8 行业均值(邻接口径) · 图9 K线 · 图10 季节性 · 图11 估值通道 · 图12 三情景
+- **结构权威文件：`references/chapter-spec.md`**（十章逐章要求 + 4 表 12 图规格 + 六条硬规则 + 变更记录）。本 SKILL.md 与它冲突时，以 chapter-spec.md 为准。
+- **配套交互页**：`C:\Users\何亚轩\Desktop\WB\{公司简称}{代码}_指标切换图.html`（用户模版定稿，见 Step 3C）
+- 目标文件被编辑器占用无法覆盖时，用递增版本号 `_v2/_v3` 另存
+
+## Step 0 · 版本锚点自检（每次出报告前先做，10 秒）
+
+**目的：任何设备上，只要本技能被加载，就先确认它不是旧版，避免按九章 3 图出报告。**
+
+```bash
+test -f <skill_dir>/references/chapter-spec.md || echo "缺 chapter-spec.md → 旧版"
+grep -c "十章" <skill_dir>/SKILL.md          # 必须 ≥1
+grep -c "12 张图" <skill_dir>/SKILL.md       # 必须 ≥1
+grep -c "九章" <agent_dir>/agents/stock-analyst.md   # 专家通道必须为 0
+```
+
+- **三条全过** → 继续 Step 1。
+- **任一不过** → **停止出报告**，告知用户「本机研报技能是旧版」，并按云端知识库《P01 换机启用 · 一句「研报分析」恢复十章能力》恢复（下载 `stock-analyst.zip` + `p01_restore.py` → 跑一次 → 新开会话）。**不要用旧版硬出报告，也不要凭记忆手写模板。**
+
+## 六条硬规则（每条都曾出过事故，交付前逐条过）
+
+1. **口径纪律**：全文只能有一个"所处行业"；其余只能作"工艺邻接/对照口径"。主口径的表/图必须排在邻接口径之前。
+2. **单位纪律**：增速一律 `%`，禁止"倍/翻倍"；"倍"只用于估值倍数与规模关系；同组标签单位必须唯一（生成脚本内 `_assert_units()` 前置断言 + 交付前 `check_fig_units.py`）。
+3. **章序纪律**：一章一主题；**并题优先于拆章**（标题与内容不符→改标题，不新增章节）；小结＝结论章，必须在估值之后；**风险提示＝正文末章**（其后只允许数据来源/免责声明）。
+4. **图表化优先**：能用图表达的不写长段（六维打分、订单、产业链、利润构成、季节性、三情景）；每张图后必须紧跟一句结论。
+5. **季节性论证**（第八章③必写）：收入侧实证 + 股价侧统计（含显著性说明）+ 翻译成验证时间轴与可证伪判据，不得用季节性直接推股价。
+6. **数据分级**：A 法定披露 / B 第三方机构与主流媒体 / C 券商研报与一致预期（仅参照）/ D 本报告自算（标假设）；每个关键数字都要能落到某一级。
+
+## 工作流（严格按序执行）
+
+### Step 1 · 确认标的与市场
+
+1. 从用户输入取股票代码或名称，判定 A 股 / 港股。
+2. 代码前缀规则：`sz`(0/3 开头)、`sh`(6 开头)、`hk`(港股)。
+3. eastmoney SECUCODE 格式：`002536.SZ` / `600685.SH` / `03696.HK`（**后缀大写、无前缀**）。
+4. 不确定时用行情接口验证名称：
+   ```bash
+   curl -s "https://qt.gtimg.cn/q=sz002536" | iconv -f gbk -t utf-8
+   # 港股：q=hk03696；返回 v_pv_none_match="1" 说明代码不存在
+   ```
+
+### Step 2 · 抓取数据
+
+全部取数细节见 `references/data-sources.md`（接口 URL、字段名、翻页要求、坑位）。必抓清单：
+
+| 数据 | 用途 |
+|---|---|
+| 日 K 线（前复权，≥490 根） | 第八章① K 线图（图9） |
+| 单季度财务（近 20 期） | 第四章 16 季度矩阵 |
+| 股东户数（翻 3 页） | 第四章 股东人数 + 户数环比行 |
+| 十大流通股东（pageSize=200 一页） | 第四章 持股机构数行（口径见 data-sources.md「持股机构数」节） |
+| 最新行情（价格/涨跌/市值/PE/PB） | 第一章、第六章 |
+| 同业 4 家财务 | 第六章 对比表 |
+| 券商研报共识、资金流向、新品/订单动态 | 第二章（共识表）、第五章⑦（订单图6）、第八章②（筹码资金，多用 WebSearch） |
+| 财务甄别证据（审计意见、减持/质押、研发资本化、收现比、商誉、有息负债等） | 第四章「财务质量甄别」小节（Step 3D，调用 fraud-detector 技能） |
+
+A 股单季值由累计值差分；毛利率由累计毛利额差分。港股仅半年报/年报 → 矩阵改半年度口径。
+
+### Step 3 · 绘制 K 线图
+
+复用 `scripts/draw_kline.py`，只需改顶部常量（A 股直接用；港股需另行适配半年报口径，脚本以技能目录实际存在为准）：
+
+```python
+CODE_QT = "sz002536"      # 行情接口代码
+CODE_API = "sz002536"     # K 线接口代码
+TITLE = "飞龙股份（002536.SZ）近一年K线走势"
+OUT = r"...\data\kline_002536.png"
+```
+
+绘图规格（**已定稿，勿改**）见 `references/kline-spec.md`。要点：
+- **窗口只取近 1 年（245 个交易日）**；上市不足 1 年取全历史并注明"上市以来"
+- 均线 MA5/MA20/MA60/**MA240**
+- **MA60 分段着色：向上红、向下绿**
+- **倍量阳线（收阳 且 量 ≥ 前日 ×2）黄色实体 FFD400 + 金边 E6A700**
+- 红涨绿跌
+
+改完窗口后，**正文中所有"近一年共 X 根倍量阳线"的统计数字必须同步重算**。
+
+### Step 3B · 绘制第四章「同比变化率折线图」（2026-09-10 新增）
+
+复用 `scripts/draw_growth.py`，只需改顶部常量（数值必须与第四章矩阵的「营收同比」「归母同比」两行**逐季一致**）：
+
+```python
+TITLE = "飞龙股份（002536.SZ）单季度营收与归母同比增速（2022Q3–2026Q2）"
+OUT = r"...\data\growth_002536.png"
+PERIODS = ["22Q3", "22Q4", ... , "26Q2"]     # 16 个季度，时间正序（与矩阵表左右相反）
+REV_YOY    = [...]                            # 营收同比(%)，与矩阵该行一致
+PROFIT_YOY = [...]                            # 归母同比(%)，与矩阵该行一致
+```
+
+规格（**已定稿，勿改**）：
+- 两条折线：**营收同比（实线、较粗）** + **归母同比（虚线、略细）**，横轴 16 个季度**时间正序（早→晚）**
+- **0 轴上下分区着色**：0 轴以上淡红底 + 正段红线，0 轴以下淡绿底 + 负段绿线；0 轴画水平实线
+- 数据点正红负绿，末点标注最新数值
+- 图幅 15.75 × 5.2（比 K 线图更扁），白底、微软雅黑、图上标题
+- 缺失季度填 `None`（自动断线，不画 0）
+- 图注（灰字）：口径说明 + 「与上方矩阵表口径一致」
+
+### Step 3C · 生成「指标切换图」HTML 交互页（2026-09-10 用户模版定稿）
+
+复用 `scripts/build_matrix_page.py`，复制为 `data/build_matrix_page_{code}.py`，只改配置区：
+
+```python
+TITLE = "皖仪科技（688600）"          # 公司简称（代码）
+OUT   = r"...\Desktop\WB\皖仪科技688600_指标切换图.html"
+QUARTERS = ["26Q2", ..., "22Q3"]      # 最新在左，与第四章矩阵列序一致
+ROWS = [("毛利率", [...]), ("营收同比", [...]),
+        ("扣非同比", [...]), ("扣非TTM", [...]),
+        ("股东变化率", [...])]        # 数值序与 QUARTERS 一一对应，缺 None
+```
+
+规格（**用户模版，勿改**，详见 `references/matrix-page-spec.md`）：
+- **固定 5 行**：毛利率 / 营收同比 / 扣非同比 / 扣非TTM / 股东变化率（不增删；股东变化率为 2026-09-12 用户新增，= 季末股东户数环比，红=增加/筹码分散、绿=减少/筹码集中，与矩阵「户数环比」行同源）
+- 蓝头矩阵（红涨绿跌，毛利率行深色）→「指标」tab（默认营收同比）→ 蓝色单线折线图
+- 数值与第四章矩阵同源同值；扣非TTM 缺失填 `None`（表显 `--`，图中断线）
+- 页面零依赖（纯 HTML+CSS+SVG），输出到 `Desktop/WB/`
+
+### Step 3D · 第四章「财务质量甄别」小节（2026-09-27 用户确认常设）
+
+第四章解读段之后**固定追加**「财务质量甄别」小节——把第四章从"展示数字"升级为"判断数字质量"。执行方式：**调用 `fraud-detector` 技能**（饶钢《财报真相》三纵两横一张网体系，57+5 项检查点）做完整甄别；补充证据（审计意见、减持/质押、研发资本化、收现比、商誉、有息负债等）用 neodata-financial-search 查询 + WebSearch 交叉确认，取数可与 Step 2 其他数据**并行**抓取。
+
+**输出形态：加粗小标题 + 3–4 段文字，不新增表格、不新增图片**（保持全文「4 表 12 图」结构不变，Step 7 断言不受影响）。固定四块内容，缺一不可：
+
+1. **红黄绿灯结论**：🟢绿灯（无★异常且非★≤3）/ 🟡黄灯（★1–2 项或非★≥4 项）/ 🔴红灯（★≥3 或触发一票否决），并给一句定性（如「财务指标全绿，仅行为信号轻微异常」）
+2. **★异常项清单**：逐条列★级异常，注明属行为信号（减持/质押/问询函）还是财务信号（现金流/资本化/一次性收益）；无异常则写「未发现★级异常」
+3. **一票否决项核查**：证监会立案 / 存贷双高 / 净利与经营现金流长期背离——三项逐一给出核查结果（"未触发"也要写明）
+4. **利润含金量提示**：OCF/归母现金含量、扣非/归母占比、收现比、应收周转天数、研发资本化率等关键证据数字（与矩阵数据同源同口径）；一次性收益占比高时明确提示估值锚应切换至扣非口径
+
+> 小节文字必须与 fraud-detector 完整报告结论一致，数字标注来源与时点；正文其余章节引用甄别结论时以本小节为准。
+
+### Step 3E · 绘制第八章④「估值通道图」（图11；2026-09-27 新增，2026-10-17 增加 PS/PB 分派）
+
+**先定指标，再画图**：高成长科技公司用 **PS（市销率）**，传统公司用 **PB（市净率）**。判定按 `references/data-sources.md`「估值指标选择」的四步硬规则走，不得凭感觉：
+
+1. **亏损 且 属科技成长类**（归母/扣非 ≤ 0 → PE 失效，但收入规模仍是有效定价锚）→ **PS 强制**
+2. 行业属科技成长类（半导体/电子/计算机/通信/互联网/AI/创新药与器械/新能源储能/军工电子/新材料/高端装备）**且** 成长性达标（营收 TTM 同比 ≥20%、研发费用率 ≥5%、毛利率 ≥30%，满足 ≥2 项）→ **PS**
+3. 其余（金融/地产/建筑/周期资源/公用事业/交运/传统消费与制造等）**以及非科技类亏损股** → **PB**
+4. 用户显式指定 → 按用户
+
+> **第 1 条只写「亏损」是错的（2026-10-17 300072 教训）**：化工/钢铁/航运等周期行业亏损股若走 PS 会掩盖「净资产打折」这一核心事实。非科技类亏损股必须先看净资产——`BPS > 0` 用 PB，**只有 `BPS ≤ 0` 才退到 PS**。
+>
+> **成长三阈值必须逐项列实测值**，不得只写「未达标」。示例（300072）：营收 TTM 同比 +66.5%（达标）、研发费用率 2.80%、毛利率 12.76%（均未达）→ 仅 1 项 → 第 2 条不成立 → 基础化工 → PB。
+
+复用 `scripts/draw_valuation.py`（复制到 data/ 改 **5 个常量** + 两条 curl 抓数，命令在脚本头部注释）：
+
+```python
+TITLE_NAME   = "百济神州（688235.SH）"     # ← 改
+OUT          = "valuation_688235.png"      # ← 改
+VAL_BPS_JSON = "val_bps_688235.json"       # ← 改（F10 BPS/营收/股本序列，pageSize=24）
+VAL_K_JSON   = "val_k_688235.json"         # ← 改（不复权日 K，1500 根）
+METRIC       = "PB"                        # ← 改："PB"=市净率（传统）/ "PS"=市销率（高成长科技）
+```
+
+规格（**已定稿，勿改**）：
+- **窗口近五年**（历史超过五年时按自然日截取近五年）；数据不足五年的次新股票自动取上市以来全部历史，标题/图注注明
+- **PB(t)** = **不复权**收盘价 / 当期每股净资产 BPS（BPS 按 **NOTICE_DATE 披露日**阶梯切换——前复权价算 PB 会失真，勿用）
+- **PS(t)** = **不复权**收盘价 / 当期每股营收 SPS，`SPS = 营收 TTM / 总股本`，`营收 TTM = 上年全年 + 本期累计 − 上年同期累计`；亏损公司仍可用 PS
+- 通道线 = 窗口内全部日指标的 **0/20/40/60/80 分位倍数 × 当期每股值**（阶梯水平线，含义：估值回到该历史分位对应的股价）；图例标注各通道倍数
+- 正文解读段必须引用脚本尾部核实输出的数字（当前倍数与分位、通道价格带、极值日期与收盘价），**禁止估算**
+- 第八章第 4 小节，**标题随指标变化**：「4. 近五年估值通道分析（**市销率 PS**）」/「4. 近五年估值通道分析（**市净率 PB**）」+ 口径段（**必须写明选 PS 还是 PB 的理由及关键证据数字**）+ 当前位置/历史脉络段 + `[[IMG_VALUATION]]` 占位 + 图注
+
+### Step 3F · 其余 8 张图（2026-10-27 新增，构成 12 图全套）
+
+技能 `scripts/` 已备好可直接跑的模板，复制到 data/ 后**只改配置区**（每个脚本头部都有 ⚠ 提示与 OUT 文件名）：
+
+| 图 | 模板脚本 | 输出 | 放在哪 | 数据要点 |
+|---|---|---|---|---|
+| 图2 | `draw_profit.py` | `profit_{code}.png` | 第四章解读后 | 归母→扣非瀑布（非经常性损益拆解）+ 归母构成，验证"利润含金量" |
+| 图3 | `draw_tam.py` | `tam_{code}.png` | 第五章② | TAM 阶梯（全球→中国→细分装备），量价分拆假设写在图注 |
+| 图4 | `draw_scorecard.py` | `scorecard_{code}.png` | 第五章③ | 六维雷达（满分轮廓 vs 实得红区）+ 各维缺口条形，需与正文得分逐项一致 |
+| 图5 | `draw_chain.py` | `chain_{code}.png` | 第五章④ | 产业链环节 + 传导时滞（季度） |
+| 图6 | `draw_orders.py` | `orders_{code}.png` | 第五章⑦ | 在手/新增/海外新签：**规模用左轴（亿元）、增速用右轴（%）**，标签单位必须与轴一致 |
+| 图7/图8 | `draw_indnp.py` | `ind_vs_hmg_npcmp_libatt.png` / `ind_vs_hmg_npcmp.png` | 第六章 | 一次出两张：主口径在前、工艺邻接口径在后；等权均值 + 取样公司名单写进图注 |
+| 图10 | `draw_season.py` | `season_{code}.png` | 第八章③ | 左：单季营收（Q4 高亮 + 旺季失效年份标注）；右：12 个月平均收益 + 上涨月数/样本数 |
+| 图12 | `draw_scenario.py` | `scenario_{code}.png` | 第八章⑤ | 三档情景横向对比 + 现价红线 + 历史最低价点线；标注"非目标价" |
+
+**四条图内硬约束**（对应六条硬规则的 1/2/4）：
+1. 单位唯一：同一轴/同一组数据标签只许一种单位，段末断言 `_assert_units()` 不得注释掉；
+2. 每图必须有 `NOTE` 常量（口径 + 数据源等级），对应 `check_fig_units.py` 的 FU4b；
+3. 标题下必须是一句**结论**（不是"某某图"），图注才写口径；
+4. 图里出现的每个数字都要能在正文或表格里找到同源出处。
+
+
+
+### Step 4 · 生成 docx
+
+复用 `scripts/build_report.py` 作为骨架（**已升级为十章 12 图 4 表版**），替换数据区与各章文字。样式规格见 `references/style-spec.md`，结构权威见 `references/chapter-spec.md`。
+
+**十章固定结构（缺一不可，顺序不可改）：**
+
+1. **公司概况与最新行情** — 2 段（简介含重大事件与定增摊薄提示 / 最新行情：价格·市值·PE 双口径·PB·PS·分位·近一年区间与回撤）
+2. **最新研报共识** — 4 列表（表1）+ 灰字口径说明
+3. **核心逻辑** — 5 条编号段，第 5 条必须落到「证真节点」
+4. **单季度财务矩阵（近 16 季，最新在左）** — 17 列 × 11 行（表2）+ 口径灰字 + **图1 增速折线** + 解读段 + **图2 利润瀑布** + 利润含金量段 + **财务质量甄别小节**（Step 3D）
+5. **所属行业景气度分析** — 7 小节：①行业界定与子赛道 ②TAM/SAM 量价分拆（图3）③六维打分（图4）④产业链传导（图5）⑤波特五力 ⑥关键变量与跟踪指标 ⑦公司订单与新品动态（必写，图6）
+6. **行业平均净利润 vs 公司净利润** — 主口径（图7）在前 + 工艺邻接口径（图8）在后 + 结论段
+7. **同行业对标（双口径前 5）** — 表3 主业口径在前、表4 工艺邻接在后，**列序即名次、严格按近 3 季营收单季同比均值降序**；+ 选取说明 + 双口径综合解读四段。**表头必须用真实公司名＋代码（如 `②惠泰医疗\n688617`），严禁留母版占位符 `①{本公司}`/`②{同业1}`…/`…`——`data_check.py --docx` 的「同业表头占位检查」会 FAIL 阻断交付（2026-10-28 用户定稿）。**
+8. **技术分析与估值**（一章一主题，不拆章）— 5 小节：①近一年K线与趋势（图9）②筹码结构与资金关注度 ③未来趋势预判（**季节性论证 + 图10**）④近五年估值通道（图11，PS/PB 按 Step 3E）⑤估值三情景（图12）
+9. **小结（结论章，必须在估值之后）** — 2 段：主线与基本面 + **三段式结论**（基本面在修复 → 估值在底部 → 趋势未反转 → 左侧/右侧定性 + 扳机信号）
+10. **风险提示（正文末章）** — 导语（三要素 + 与小结证真节点、三情景条件对应）+ 4 组风险（行业与需求 / 财务与资产质量 / 新业务与兑现 / 交易与外部）+ 收尾段（落空后切换哪个情景档）
+
+末尾：数据来源与分级说明（A/B/C/D）→ 灰色免责声明段。
+
+> **章序铁律**：①一章一主题，标题与内容不符时**改标题（并题），不新增章节**；②小结=结论章必须排在估值之后；③风险提示必须是正文末章。`audit_docx.py` 已机械化这三条（CH-RISK-NOT-LAST / CH-CONCL-BEFORE-VAL / CH-THEME-MIX）。
+
+**第四章矩阵行（A 股，10 个指标行，一行都不能少；「持股机构数」为 2026-10-26 用户定稿的模板固定行）：**
+
+```
+毛利率 / 营收(亿) / 营收同比 / 归母(亿) / 归母同比 / 扣非同比 / 扣非TTM(亿) / 股东人数(户) / 户数环比 / 持股机构数
+```
+
+- 股东人数取**各季度末**（3/31、6/30、9/30、12/31）披露值
+- 户数环比 = 与**上一季末**对比（切勿用临时披露日，如 8/31 vs 8/20 是错的）
+- 户数环比着色：红 = 增加/筹码分散，绿 = 减少/筹码集中
+- 持股机构数 = 报告期末十大流通股东中机构（`RPT_F10_EH_FREEHOLDERS`，`IS_HOLDORG="1"` 计数）家数，不着色；口径灰字必须注明「仅反映前十大席位，不代表全市场机构持仓总数」
+- **同比双负基数显示（2026-10-26 605358 定稿）**：上年同季与本季归母/扣非均为负时，数值为亏损额同比变化（正 = 减亏、负 = 增亏），照常按符号红/绿着色，并在口径灰字中写明该语义
+- **同比行着色（红涨绿跌，勿漏正值红色）**：营收同比/归母同比/扣非同比三行——正值一律包 `<r>...</r>`（含带 `*` 的正值），负值一律包 `<g>...</g>`（含带 `*` 的负值），不得留黑色；归母(亿)/扣非TTM(亿) 两行仅负值包 `<g>`、正值黑色；毛利率/营收(亿)/股东人数行不着色
+- **同比特殊值显示（2026-09-27 定，603893 实战）**：负基数转正 → `<r>扭亏</r>`；正基数转负 → `<g>转亏</g>`；|基数| < 0.1 亿 → 数值后加 `*`（如 `+1318.5*`），禁止输出 +23539% 这类失真数字；同比基数用**全量单季序列**查表（16 季展示窗口外的期数也可能成为基数），窗口仅限展示行；draw_growth 对超出 YMAX 的极端同比 clip 绘制并加箭头标注「低基数，超出显示范围」
+- **色标开闭必须匹配**：`<g>…</g>` / `<r>…</r>` 一一配对（603893 曾出现 `<g>-2.7%</r>` 误闭合导致复核 FAIL）；生成器里闭合标签随开标签变量走，勿硬编码 `</r>`
+- 生成后用 python-docx 断言三个同比行的红/绿 run 数量与数据正负个数一一对应（2026-09-25 昊志机电与杰普特两份漏红返工教训）
+
+**港股矩阵（半年报口径，10 列）：** `指标 / 26H1 / 25H2 / 25H1 / 24H2 / 24H1 / 23H2 / 23H1 / 22H2 / 22H1`，H2 = 年度值 − H1 值，须加尾差注释。
+
+### Step 5 · 插入 12 张图
+
+`build_report.py` 已留 12 个文本占位（按物理顺序即图号）：`[[IMG_GROWTH]]` `[[IMG_PROFIT]]` `[[IMG_TAM]]` `[[IMG_SCORECARD]]` `[[IMG_CHAIN]]` `[[IMG_ORDERS]]` `[[IMG_INDNP_LIBATT]]` `[[IMG_INDNP]]` `[[IMG_KLINE]]` `[[IMG_SEASON]]` `[[IMG_VALUATION]]` `[[IMG_SCENARIO]]`。
+用 `scripts/insert_img.py` 一次替换全部（**版心自适应，2026-09-27 固化**：读取 page_width − 左右边距得版心宽，图宽超版心时等比缩放并预留 2000 EMU，保存后逐张自检 `sh.width ≤ 版心宽`，不过则以非零码退出阻断交付）：
+
+```python
+SRC = r"data/{公司名}{代码}研报分析.docx"
+IMG_GROWTH = r"data/growth_{代码}.png"        # 图1
+IMG_PROFIT = r"data/profit_{代码}.png"        # 图2
+IMG_TAM = r"data/tam_{代码}.png"              # 图3
+IMG_SCORECARD = r"data/scorecard_{代码}.png"  # 图4
+IMG_CHAIN = r"data/chain_{代码}.png"          # 图5
+IMG_ORDERS = r"data/orders_{代码}.png"        # 图6
+IMG_INDNP_LIBATT = r"data/ind_vs_hmg_npcmp_libatt.png"   # 图7
+IMG_INDNP = r"data/ind_vs_hmg_npcmp.png"                 # 图8
+IMG_KLINE = r"data/kline_{代码}.png"          # 图9
+IMG_SEASON = r"data/season_{代码}.png"        # 图10
+IMG_VALUATION = r"data/valuation_{代码}.png"  # 图11
+IMG_SCENARIO = r"data/scenario_{代码}.png"    # 图12
+# 脚本自动：版心 clamp → 替换 12 个占位 → 自检无残留 "[[" + 逐张图宽 ≤ 版心 → 复制到桌面 WB
+```
+
+（**勿手工硬编码 `width=Emu(5903999)`**——5903999 EMU ≈ 16.4cm，超 A4 版心约 15.9cm，Word 会按版心右侧裁切（2026-09-27 百济神州交付因此返工）；一律走脚本自适应。）
+
+### Step 6 · 数据复核（强制，2026-09-12 用户要求，不通过不得交付）
+
+**成文完成后、交付前必须执行**；复核不通过 → 修数据源 → 重新生成 → 复跑复核。复用 `scripts/data_check.py`（改常量即可）：
+
+```python
+python data_check.py matrix_data.json 公司名 正文26H1营收,正文26H1归母   # 返回全部 PASS 才算过
+```
+
+必查清单（每条都要有输出证据）：
+
+1. **交叉口径核对**：矩阵/图表最新期数字 ↔ 正文各章引用数字（如矩阵 26H1 两季合计 vs 第一章增速表营收/归母/同比）。不一致 = 错误，以定期报告口径为准修数据源，再同步正文。
+2. **单季差分自洽**：全年四季单季值回加 ≈ 年报累计值；最新两期同比重算 vs 矩阵值（容差 0.1pp）。
+3. **主体/口径断点**：B转A、借壳、重组、更名标的，必须检测 F10 是否混入原主体数据（同年相邻季累计营收回落即断点）→ 剔除不可比段、只留追溯重述口径，并在表下写口径说明（参考汽轮科技 300277 案例：25Q1–26Q2 仅 4 季）。
+4. **逐格抽检**：每张表抽 2–3 格与数据源原始返回比对；正负着色方向正确（红涨绿跌）。
+5. **数字-文字一致**：正文所有百分比/金额与表格同源；改任何一处数字，全文与图表同步重算。
+
+> 教训（2026-09-12 汽轮机对比报告）：矩阵混入借壳前海联讯口径 16 季交付给用户，属明显错误。根因是只做了结构自检、没做数据交叉复核——本步骤即为防再犯。
+
+> 工程注意（2026-09-27 603893 实战）：连续多次 Edit 修改脚本后必须 grep 验证关键行已落盘，未生效时用 Write 全量重写兜底——本次 Edit 曾多次"假成功"导致反复返工；复核器 import 报表脚本时（脚本顶层 `from docx import ...`）须用 venv 解释器跑。
+> 引号铁律（2026-10-18 000021 实战，三次返工教训）：写 `build_report_{code}.py` 时，**正文文字里的中文引号一律用「」或全角“”，绝不能用 ASCII 直引号 `"`**——它在双引号字符串里会提前终止字符串（SyntaxError: invalid character）。用 heredoc/脚本生成时尤其易犯；数据区（CONSENSUS/MATRIX/PEER）没有内层引号，安全。修正脚本批量替换时务必只作用于正文区、跳过数据区，否则会把数据区的字符串定界符也换掉。
+
+### Step 6.5 · 上下文查漏补缺与逻辑校验（强制，2026-10-27 用户确认增设）
+
+**Step 6 数据复核 PASS 之后、Step 7 结构自检之前执行。** 调用独立技能 `report-logic-audit`（**六关 · 研报档**：论点—证据闭环 / 概念与口径一致 / 结构完整与衔接 / 逻辑链条 / **推理终结** / **数据与图文一致**）。
+
+```bash
+PY="C:/Users/何亚轩/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
+$PY ~/.workbuddy/skills/report-logic-audit/scripts/audit_docx.py "{DST}" --genre research \
+    --must-have 财务质量甄别 --must-have 估值通道分析 --must-have 免责声明 \
+    --industry {主业行业} --industry-alt {工艺/邻接行业}
+# 关卡五 推理终结：结论是否给出机制/条件/反例/可证伪判据（看「待收口的断言」表）
+$PY ~/.workbuddy/skills/report-logic-audit/scripts/check_reasoning.py "{DST}"
+# 关卡六：读 12 个图源脚本的常量，查单位/量纲/标签-数值（text 层审核看不见图内文字）
+$PY ~/.workbuddy/skills/report-logic-audit/scripts/check_fig_units.py --figs data --docx "{DST}"
+```
+
+判定：`audit_docx.py` 的 BLOCK/FIX 必须为 0；`check_fig_units.py` 的 BLOCK 必须为 0（FU6 提示级可保留，但交付说明里要一句话解释「不同指标并存」）；`check_reasoning.py` 不看 BLOCK/FIX 计数，而是**逐条读「待收口的断言」表**——凡结论无机制或无条件边界的，要么补条件句，要么在正文降级为"待观察"。三情景章必须附证伪台账（结论 → 怎么算错 → 看什么指标、什么时候），写不出判据的情景不成立。
+
+必查六关（详情见该技能 SKILL.md；研报档叠加行业口径矩阵/主次顺序/模板完整性）：
+
+1. **口径一致性**：全文只能有一个"所处行业"。标题、第①节行业界定、TAM 口径、竞争格局对手、同业池、估值锚必须指向同一行业；主业占比过半者才可占"所处行业"位，其余只能作"工艺手段"。
+   > 教训（2026-10-27 海目星 688559）：第五章标题写「激光高端装备」、TAM 用激光设备 958 亿，第六章正文却写「56–66% 收入在锂电」，第七章同业池按锂电排。数据全对、`data_check.py` 全 PASS，但全篇口径打架，用户一眼看出、追改三轮。**根因：`data_check.py` 只管数字，不管话说不说得通。**
+2. **上下文衔接**：章节编号连续无缺号/重号、无悬空引用、每表每图有解读段、每条结论有证据、必写小节在位（漏整节是克隆模板头号事故）。
+3. **逻辑链条**：β 当 α、相关当因果、线性外推、共识即答案、多空自相矛盾、数字与定性反向、跨章结论打架。
+4. **模板完整性**：章节顺序、表格行列与着色、图表数量、占位符零残留。
+
+任一 🔴 阻断项未清零，不得进入 Step 7。
+
+> 工程注意（2026-10-27）：`audit_docx.py` 的机械检查（章节连续性/占位符/悬空引用/表格解读/必写小节）可自动跑，**但口径混搭与逻辑链条脚本无法定性判定**，必须模型逐条读原文判断——脚本 PASS ≠ 逻辑过关。
+
+### Step 7 · 自检并交付
+
+```python
+from docx import Document
+import zipfile
+d = Document(DST)
+assert len(d.tables) == 4                                                  # 共识 / 矩阵 / 同业主口径 / 同业邻接口径
+assert len(d.tables[0].columns) == 4                                       # 共识表（行数随券商覆盖家数浮动，断言按当期 CONSENSUS 实际行数改）
+assert len(d.tables[1].columns) == 17                                      # 矩阵
+assert len(d.tables[1].rows) == 11                                         # 表头 + 10 行（含持股机构数）
+assert (len(d.tables[2].rows), len(d.tables[2].columns)) == (9, 6)         # 同业主口径（表头 + 8 行）
+assert (len(d.tables[3].rows), len(d.tables[3].columns)) == (9, 6)         # 同业工艺邻接口径
+assert not any("[[" in p.text for p in d.paragraphs)                       # 12 个占位符均已替换
+assert any("财务质量甄别" in p.text for p in d.paragraphs)                 # 第四章甄别小节（Step 3D）
+assert any("估值通道分析" in p.text for p in d.paragraphs)                 # 第八章④估值通道（Step 3E）
+assert any("风险提示" in p.text for p in d.paragraphs)
+# 章序铁律：风险提示必须是最后一个「X、」章标题；小结必须排在含「估值」的章之后
+import re
+_heads = [p.text.strip() for p in d.paragraphs if re.match(r"^[一二三四五六七八九十]+、", p.text.strip())]
+assert len(_heads) == 10, _heads
+assert "风险" in _heads[-1], f"风险提示不是末章：{_heads}"
+assert _heads.index([h for h in _heads if "小结" in h][0]) > _heads.index([h for h in _heads if "估值" in h][0]), "小结必须排在估值之后"
+imgs = [n for n in zipfile.ZipFile(DST).namelist() if "media" in n]
+assert len(imgs) >= 12, f"应含 12 张图（图1–图12），实际 {len(imgs)} 张"
+# 配套交互页（Step 3C）
+assert os.path.exists(r"C:\Users\何亚轩\Desktop\WB\{公司简称}{代码}_指标切换图.html")
+# 表头可见性三查（2026-10-26 教训：白字表头忘设底纹 → 打开是一片"空"表头；另列宽超版心会被 Word 强压）
+NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+sec = d.sections[0]; _avail = (sec.page_width - sec.left_margin - sec.right_margin) / 360000
+for _t in d.tables:
+    _fills = {(_t.cell(0, _c)._tc.tcPr is not None and _t.cell(0, _c)._tc.tcPr.find(NS + "shd") is not None
+               and _t.cell(0, _c)._tc.tcPr.find(NS + "shd").get(NS + "fill")) or None for _c in range(len(_t.columns))}
+    assert all(_f and _f.lower() not in ("auto", "ffffff") for _f in _fills), f"表头底纹缺失/过浅: {_fills}"
+    assert sum(c.width for c in _t.rows[0].cells) / 360000 <= _avail + 0.05, "列宽超版心"
+    assert _t.rows[0]._tr.trPr is not None and _t.rows[0]._tr.trPr.find(NS + "tblHeader") is not None, "缺跨页表头"
+```
+
+最后用 `present_files` 展示文件，并在回复中给核心结论 + **免责声明（本报告不构成投资建议，据此操作风险自担）**。
+
+## 环境
+
+- Python（含 python-docx / matplotlib / numpy）：
+  `C:/Users/何亚轩/.workbuddy/binaries/python/envs/default/Scripts/python.exe`
+- 工作目录（脚本与中间数据）：`{workspace}/data/`
+- 中文字体：微软雅黑 / SimHei（`references/kline-spec.md` 有回退列表）
+
+## 快速新增一只股票的套路
+
+```bash
+cd {workspace}
+# 1) K 线脚本改名复制，只改常量
+sed -e 's/kline_上一代码/kline_新代码/g' -e 's/上一市场前缀/新市场前缀/g' \
+    data/draw_kline_上一代码.py > data/draw_kline_新代码.py
+# 1B) 增速折线脚本改名复制，只改常量（PERIODS / REV_YOY / PROFIT_YOY / OUT）
+sed -e 's/growth_上一代码/growth_新代码/g' -e 's/上一公司名/新公司名/g' \
+    data/draw_growth_上一代码.py > data/draw_growth_新代码.py
+# 1C) 指标切换图 HTML 生成脚本改名复制，只改常量（TITLE / OUT / QUARTERS / ROWS）
+cp data/build_matrix_page_上一代码.py data/build_matrix_page_新代码.py
+# 1D) 估值通道脚本改名复制 + 两条 curl 抓 BPS/营收/股本/不复权K（命令见 draw_valuation.py 头部注释，代码要换，METRIC 按公司类型定）
+sed -e 's/688235/新代码/g' -e 's/百济神州/新公司名/g' \
+    "$HOME/.workbuddy/skills/stock-research-report/scripts/draw_valuation.py" > data/draw_valuation_新代码.py
+# 1E) 其余 8 图：从技能目录整体拷 8 个模板，逐个改配置区（数据必须来自本期真实取数，勿沿用示例）
+SK="$HOME/.workbuddy/skills/stock-research-report/scripts"
+for f in draw_profit draw_tam draw_scorecard draw_chain draw_indnp draw_orders draw_season draw_scenario; do
+    cp "$SK/$f.py" "data/${f}_新代码.py"
+done
+# 2) 报表脚本改名复制（十章骨架），换数据区（CONSENSUS/MATRIX_HEAD/MATRIX/PEER_MAIN/PEER_ALT）+ 逐条填【填空…】
+# 3) 插图脚本改名复制（12 个图片路径）
+sed -e 's/上一公司名/新公司名/g' -e 's/上一代码/新代码/g' \
+    data/insert_img_上一代码.py > data/insert_img_新代码.py
+# 4) 串联跑完（顺序：12 图 → 报表 → 插图 → 数据复核 → 六关审核）
+python data/draw_kline_新代码.py && python data/draw_growth_新代码.py && python data/build_matrix_page_新代码.py \
+  && for f in data/draw_profit_新代码.py data/draw_tam_新代码.py data/draw_scorecard_新代码.py data/draw_chain_新代码.py \
+     data/draw_indnp_新代码.py data/draw_orders_新代码.py data/draw_season_新代码.py data/draw_scenario_新代码.py; do python "$f"; done \
+  && python data/build_report_新代码.py && python data/insert_img_新代码.py
+```
+
+## 参考文件
+
+- **`references/chapter-spec.md` — 结构权威（十章 + 12 图 + 4 表 + 六条硬规则 + 变更记录）**，任何结构问题先查它
+- `references/style-spec.md` — docx 全部样式参数（字号/颜色/底纹/列宽/EMU 尺寸/增速折线图规格）
+- `references/kline-spec.md` — K 线图全部绘图参数与信号规则
+- `references/matrix-page-spec.md` — **指标切换图 HTML 页规格（用户模版定稿）**
+- `references/data-sources.md` — 各接口 URL、字段、翻页、已知坑
+- `scripts/data_check.py` — **数据复核器**（Step 6：差分自洽/同比重算/口径断点/正文交叉核对）
+- 外部技能 `report-logic-audit` — **六关审核器**（Step 6.5：`audit_docx.py` 查文字层 + `check_reasoning.py` 查推理终结 + `check_fig_units.py` 查图源单位）
+- `references/portable-setup.md` — **跨设备安装与换机注意事项**（用户出差换电脑时必读）
+- `scripts/draw_kline.py` — 图9 K 线（改常量即可）
+- `scripts/draw_growth.py` — 图1 同比变化率折线（改常量即可）
+- `scripts/draw_valuation.py` — 图11 估值通道（PS/PB 分派，近五年；头部注释含取数 curl）
+- `scripts/draw_profit.py` — 图2 利润含金量瀑布
+- `scripts/draw_tam.py` — 图3 市场空间 TAM 阶梯
+- `scripts/draw_scorecard.py` — 图4 景气度六维打分
+- `scripts/draw_chain.py` — 图5 产业链传导
+- `scripts/draw_indnp.py` — 图7/图8 行业均值 vs 公司（一次出两张，主口径 + 邻接口径）
+- `scripts/draw_orders.py` — 图6 订单全景
+- `scripts/draw_season.py` — 图10 季节性拆解
+- `scripts/draw_scenario.py` — 图12 估值三情景
+- `scripts/build_matrix_page.py` — 指标切换图 HTML 页生成器（用户模版，改常量即可）
+- `scripts/build_report.py` — **研报 docx 骨架（十章 12 图 4 表版）**，含样式工具函数与【填空…】说明
+- `scripts/insert_img.py` — 替换 12 个图片占位符并复制到桌面（版心自适应自检）
+- `scripts/_archive/` — 旧版（九章 3 图）骨架与 SKILL 存档，仅供对照，不要再用
+- `~/.workbuddy/skills/fraud-detector-plus__skillhub/` — **财务造假甄别技能**（Step 3D 第四章「财务质量甄别」小节调用）
+
+## 变更记录
+
+| 日期 | 变更 |
+|---|---|
+| **2026-10-28** | **Step 6.5 升级为六关**（`report-logic-audit` 通用化改造的连带更新）：新增 **关卡五 推理终结**（`check_reasoning.py`：结论是否给机制/条件边界/反例/可证伪判据，裁定已终结/半终结/未终结），原图文口径关顺延为关卡六；三情景章强制附**证伪台账**；`audit_docx.py` 调用补 `--genre research`（新增体裁参数，默认行为不变） |
+| **2026-10-27** | **模板换代：九章 3 图 → 十章 12 图 4 表**（母版＝海目星 688559 版）。新增：五章 7 小节（TAM/六维/产业链/订单 4 图）、六章双口径对比 2 图、七章双表（主业+工艺邻接，列序即名次）、八章合并"技术分析与估值"并新增季节性论证（图10）与三情景（图12）、九章小结三段式结论、十章风险提示四组结构；新增六条硬规则（口径/单位/章序/图表化/季节性/数据分级）；Step 6.5 升级为五关（新增图文口径 `check_fig_units.py`）；旧版存 `scripts/_archive/` |
+| 2026-09-27 | 新增第四章财务质量甄别小节、第九章估值通道小节 |
+| 2026-09-10 | 新增第四章同比变化率折线图、指标切换图 HTML |
+
+## 跨设备可用性（双通道）
+
+用户会出差换电脑。本技能通过**两条通道并行**提供，两边内容必须保持一致：
+
+| 通道 | 位置 | 触发 |
+|---|---|---|
+| **A · 独立技能** | `~/.workbuddy/skills/stock-research-report/` | 对话中自动加载 |
+| **B · 专家** | `~/.workbuddy/plugins/marketplaces/my-experts/plugins/stock-analyst/skills/stock-research-report/` | 召唤「个股研报分析师」专家时加载 |
+
+**改动本技能后必须同步两边并刷新打包产物**，在工作区运行：
+
+```bash
+python sync_skill.py
+```
+
+（同步副本 → 校验逐字节一致 → 打包技能包 → 校验并重注册专家 → 打包专家包 → 备份）
+
+带出去的包在 `Desktop/WB/`：`stock-analyst.zip`（专家，推荐）与 `stock-research-report.zip`（纯技能，轻量）。
+
+**在陌生设备上被要求出研报时**，先确认：
+1. 技能或专家是否已安装——若未安装，按 `references/portable-setup.md` 引导用户导入对应 zip
+2. Python 与 python-docx/matplotlib/numpy 是否可用
+3. 输出目录是否为该设备的桌面路径（`insert_img.py` 已自动适配，一般无需改）

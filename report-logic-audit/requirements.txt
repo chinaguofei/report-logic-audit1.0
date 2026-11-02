@@ -1,0 +1,4 @@
+# 只有读取 .docx 时才需要；.md / .txt / .html 零依赖，不用装
+python-docx>=0.8.11
+# 英文拼写检查（仅 --lang en 时需要；缺则自动跳过，不影响中文路径）
+pyspellchecker>=0.7.0

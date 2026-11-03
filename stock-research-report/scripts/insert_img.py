@@ -75,12 +75,21 @@ for token, img, h in PLACEHOLDERS:
     if not os.path.exists(img):
         print(f"!! 缺少图片，跳过 {token}: {img}")
         continue
+    # 高度优先按 PNG 实际纵横比算（h 仅为缺 Pillow 时的兜底常量）。
+    # 2026-11-03 修正：draw_all 各图 figsize 不同，硬编码高度会把图压扁/拉长
+    # （实测 scorecard 实际比例 0.798，旧常量对应 0.356，插入后严重变形）。
+    hh = None
+    try:
+        from PIL import Image
+        pw, ph = Image.open(img).size
+        hh = int(W * ph / pw)
+    except Exception:
+        hh = int(h * W / W0)
     for p in doc.paragraphs:
         if token in p.text:
             for r in list(p.runs):
                 r._element.getparent().remove(r._element)
-            # 高度按 clamp 后宽度等比缩放，保持纵横比
-            p.add_run().add_picture(img, width=Emu(W), height=Emu(int(h * W / W0)))
+            p.add_run().add_picture(img, width=Emu(W), height=Emu(hh))
             hit += 1
     print(f"inserted {token}:", hit)
     if hit == 0:

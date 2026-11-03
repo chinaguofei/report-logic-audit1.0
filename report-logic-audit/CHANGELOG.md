@@ -1,5 +1,79 @@
 # 更新记录
 
+## 1.1.9 — 2026-11-03
+
+**外文（英文）格式审校支持（多语言扩展第一步）**
+- 新增 `--lang` 参数（`audit_docx.py` / `check_format.py`，默认 `zh`，可选 `en`）。
+- `check_format.py` 英文模式（`--lang en`）：
+  - 跳过全部中文专属关：错别字词表、全角字符、中英文空格（盘古之白）、中文语境英文词（F-ENWORD）、eastAsia 中文字体混用（F-FONT）；
+  - 改跑英文专属关：**拼写检查**（pyspellchecker，纯 Python 离线词库，缺依赖自动跳过并提示）、**标点前多余空格**（F-EN-SPACE-B）、**行内连续空格**（F-EN-SPACE）；
+  - 拼写候选仅取长度 ≥3 的单词，避免 `py`/`id` 等两字母词误报。
+- `audit_docx.py` 英文模式：跳过中文专属的「自相矛盾」机械关（依赖 3–4 字中文窗口）；其余结构关按 CJK 标记判定，英文文档多数自然不触发，安全不误报；语义六关由 LLM 对英文文本推理，不丢失。
+- 新增英文「故意写坏」样例 `examples/sample-bad-article-en.md`，`references/genre-packs.md` 新增第 10 节「外文（英文）审核要点」。
+- 文本层扫描接口改为 `scan_text(text, src, lang)`、`scan_docx(doc, lang)`、`fix_docx(doc, src, dst, lang)`，向后兼容（默认 zh）。
+- 依赖：`requirements.txt` 增加 `pyspellchecker>=0.7.0`（仅英文拼写需要，缺则自动跳过，不影响中文路径）。
+- 验证：中文样例 `sample-bad-article.md` 回归零退化；英文样例 `--lang en` 抓到 2 处拼写 + 2 处标点空格，默认 zh 下零命中（证明英文须显式带 `--lang en`）。
+
+## 1.1.8 — 2026-10-30
+
+**G4 真机抽样落地 + 两关 .md 崩溃修复 + R17 误报修复 + 漏译英文检测（skill-delivery-gate G4 闭环）**
+- 背景：新建 `skill-delivery-gate`（交付前对抗闸门，含 G4 真机抽样）要求技能交付前必须跑真文章 + 人工核对。对公开真实文章《海目星：固态电池/AI算力设备第二增长曲线》（688559）跑全六关，暴露三类 Pass B 零回归门漏掉的真问题（Pass B 只测 .docx，未覆盖 .md 路径）：
+- 修复：
+  1. **两关在 .md/.txt/.html 上崩溃**：`check_residue.py` / `check_table_complete.py` 无条件 `Document(args.docx)`，非 .docx 抛 `PackageNotFoundError`。改为按扩展名分发——`check_residue` 复用 `audit_docx.load_blocks` 同款多格式读取，禁词扫描覆盖全文；`check_table_complete` 单元格级缺格检查仅 .docx 支持，其他格式显式跳过并 PASS（不静默、不崩溃）。
+  2. **R17 自相矛盾 3 处误报**：① H1 标题（含「增长」）与正文（含「低于」）配对，共享 token「海目星」；②「2025年同比下降」vs「2026年Q1同比增长」同年期对比；③「行业周期性调整…下滑」vs「行业周期性回暖…回升」周期叙事。修复：a) 跳过以 `#` 开头的标题/章节行；b) 时间闸升级——引入年份正则 + 时期签名，仅当两句都带时间词且**所指时期不同**才判为合法变化跳过（同年期矛盾保留）；c) 新增周期叙事闸：两句都含「周期/景气/波动」则跳过。R17 误报 3 → 0，真矛盾不受影响。
+  3. **漏译英文漏检**：`check_format.py` 中文语境里的英文词（「支撑 strong」「growth 逻辑」）原未被任何格式关捕获。新增 F-ENWORD：全小写、长度≥4、出现在含中文句子中（大写品牌名/全大写缩写 Apple/OLED/AI 不触发），命中报「建议」人工确认；URL 相邻（. / @ :）跳过；并修掉边界 bug（原 `a in "./@:"` 对行尾空串恒真，漏检行尾英文词）。
+- G4 真机抽样结论（样本 + 留档：`g4-sample/海目星_真实分析_20260616.md` 及 `g4_*.txt`、两 `_json`）：
+  - 召回（真缺陷被抓）：E-ABSOLUTE×4（首家/首个等无据绝对化）、R13-EFFECT×4（量级词配效应量）、RSN-OPEN×6（推理链未收口）、X1-COND×1（有望/预计缺条件）、F-PANGU×1（中英文空格）、F-ENWORD×3（strong/growth 漏译）、residue×2（竞品实名 vs 匿名 competitor 不一致）。
+  - 精度：R17 误报 3 → 0；其余档位人工核对均为真阳性。
+  - 六关在 .md 上不再崩溃（check_table_complete 显式跳过、check_residue 跨格式扫描）。
+- 零回归：八脚本 `py_compile` 全过；同 .docx 测试件跑前后 BLOCK/FIX/SUGGEST 计数与 finding 内容逐字 diff 一致（R17 修复仅影响 .md 标题/同期对比场景，.docx 既有结论未变）。
+- 版本：frontmatter `version` 1.1.6 → 1.1.8（同步补齐 1.1.7 未升的前档）。
+
+## 1.1.7 — 2026-10-30
+
+**重构 · 抽公共件 + 文档自相矛盾修正 + 两处低危加固（Pass A→B，软件工坊评审驱动）**
+- 背景：Pass A 架构评审（软件工坊 · 架构/代码/安全三线）实测发现：① SKILL.md 声称「八个脚本互不依赖」但 `check_reasoning.py` 实际 `import audit_docx`；② `add()` 发现发射器在 `audit_docx.py` / `check_reasoning.py` 逐字重复；③ `CN_NUM` 在两脚本各定义一份；④ `check_format.py` 的 `os.remove` 缺存在性守卫；⑤ 各脚本输入路径无存在性校验。裁定「抽公共件」而非拆巨石（拆 970 行主脚本会引入高回归风险、提效为负）。
+- 内容：
+  - 新增 `scripts/common.py`：集中 `findings` 列表、`add()`、`CN_NUM`、`severity_exit()`（原重复代码去重，未来第 9/10 个检查器零样板）。
+  - `audit_docx.py` / `check_reasoning.py` 改 `from common import findings, add, CN_NUM`，删除各自重复的 `add()` / `findings=[]` / `CN_NUM=`。
+  - `check_format.py` 的 `os.remove(dst)` 加 `if os.path.exists(dst)` 守卫（C1-3）。
+  - 七个脚本（audit_docx / check_reasoning / check_format / check_residue / check_table_complete / polish_docx / summarize_outline）对缺文件输入由「打印后崩溃」改为 `ap.error`（输入守卫，安全审计 S5）。
+  - 修订 SKILL.md 两处自相矛盾表述，如实描述 `common.py` 依赖。
+- 零回归：同篇测试 .docx/.md 跑前后两版，BLOCK/FIX/SUGGEST 计数与 finding 内容逐字 diff 一致；八脚本 `py_compile` 全过。
+- 安全复审跟进：移除 `common.py` 中未调用的 `safe_open_docx()` 死代码（S5 加固实际由各脚本 `ap.error` 输入守卫承担，原描述略夸大），同步清理无用 `import os/re/sys`；八脚本 `py_compile` 复验通过。
+- 文档补遗（C1-2 信息项闭环）：SKILL.md 模式二·润色第 4 条「落地后重跑审校」处新增注释，说明 `polish_docx.py` 经 `subprocess.run` 自调 `audit_docx.py` 是有意进程隔离（同机复核、`sys.executable` 起解释器、路径取 `__file__`、无 `shell=True`），提醒维护者勿当代码味"优化"掉。
+
+## 1.1.6 — 2026-10-29
+
+**新增 · 语义层对抗审计清单（六类）**
+- 背景：对迅捷兴成品报告做语义层对抗审计，一轮抓出 8 处机械关查不到的问题——非经常性损益符号写反（+0.030 亿写成「-0.030 亿净损失」，正文 2 处＋图 2 图内 0.90 元/89.8%/10.2% 陈旧字面量同错）、「医学影像」北芯语境残留（禁词关拦不住领域语境词）、图 12 期名括注（2026H1→2026Q3）、「约 6.96 亿」陈旧字面量（真值 6.89）、「近一年…含上市以来高低」窗口矛盾、+97.3% vs +97.29% 口径不一、机构名称变体、排序键与引用值混称。
+- 内容：SKILL.md 第五层防线后新增六类清单（符号方向/期名窗口/模板语义残留/陈旧字面量/口径统一/指代严谨）；配套 data_check 增加「非经常性损益方向」断言锁死符号。
+- 使用方式：出件前人工按清单过一遍全文＋各图标注，10 分钟。
+
+## 1.1.5 — 2026-10-29
+
+**新增 · 第五层防线「独立数据源对账」（非脚本文档环节）**
+- 背景：对抗性复核抓到两类机械关查不到的问题——①时效性错价（26Q3 三季报公告日=报告日，BPS 5.05→5.539 使 PB 9.95→9.07×、三情景区间整体下移，级联 20+ 处）；②派生≠披露（正文显示派生 +97.33% vs 披露 +97.29%）。
+- 内容：SKILL.md 新增「第五层防线」章节——终稿前重拉 F10/行情接口核对四类锚点（BPS/累计同比/TTM/股本）、披露锚点入 meta.anchors、16 季单季独立重算对账操作指引。
+- 同时沉淀「补丁纪律」：py_compile 为补丁固定步骤；Edit 未落盘风险与 Python 补丁脚本替代法。
+
+## 1.1.4 — 2026-10-29
+
+**新增 · 跨报告模板残留关卡（`scripts/check_residue.py`）**
+- 背景：迅捷兴（688655）复用北芯（688712）图脚本模板，图 3 数据区已换 PCB 但子图标题仍残留「IVUS」，渲染出图文矛盾的图，前三关全部漏过（机械关只查 docx 文本，不查脚本配置区与渲染产物一致性）
+- 扫 docx 全文（段落/表格/页眉页脚）中 `--ban` 指定的旧报告标识词，命中即 FIX、退出码 1
+- 配套流程规矩（写入研报技能）：克隆模板后出图前，先对**图脚本源文件**跑一次禁词 grep，再对成品 docx 跑本关
+
+## 1.1.3 — 2026-10-29
+
+**新增 · 表格缺格关卡（`scripts/check_table_complete.py`）**
+- 背景：迅捷兴研报矩阵表出现「--」缺格（营收同比缺 4 格、归母/扣非同比各缺 1 格），穿透全部既有关卡——三关只查文本逻辑，从不检查表格里有没有空格；本技能当初即为「缺一行数据」而生，却缺这道本源关
+- 扫全部表格每格，`--` / `—` / 空串 / TBD / 待补 等一律报 FIX、退出码 1；合法占位用 `--allow-str` 显式声明
+- 配套：`data_check` 类校验脚本新增「逐行无缺格」断言，录编前拦截
+
+**修复**
+- SKILL.md ③.5 命令行补丢失的 ` ` 前缀
+
 ## 1.1.0 — 2026-10-28
 
 **新增 · 格式审校（模式三，`scripts/check_format.py`）**
@@ -34,7 +108,7 @@
 
 **其他**
 - 32 条病灶库（E 证据 8 / R 推理 16 / X 表达 8），每条附可直接问出口的问句
-- 5 个脚本，兼容 `.docx / .md / .txt / .html`
+- 8 个脚本，兼容 `.docx / .md / .txt / .html`
 - 自带故意写坏的样例 `examples/sample-bad-article.md`，装完即可自测
 
 **已知边界**

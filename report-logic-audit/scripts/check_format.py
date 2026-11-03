@@ -21,11 +21,15 @@
 用法:
     # 看报告，不动文件（默认）
     python check_format.py 文章.docx
-    python check_format.py 文章.md          # md/txt 只做文字层三组检查
+    python check_format.py 文章.md          # md/txt 只做文字层五组检查（错别字/全角/中英文空格/数字单位/英文词）
 
     # 自动统一字体与行距（docx 专属）：写新文件，文字逐字校验不变
     python check_format.py 文章.docx --fix
     python check_format.py 文章.docx --fix --out 文章_格式.docx
+
+    # 英文文档：跳过中文专属关，启用拼写与标点检查
+    python check_format.py article_en.md --lang en
+    python check_format.py article_en.docx --lang en
 
 支持 .docx（全项）/ .md / .txt（文字层）
 退出码: 0 正常（格式问题不阻断交付，故无"阻断"档）；2 文件读不了/缺依赖
@@ -34,6 +38,13 @@ import argparse
 import os
 import re
 import sys
+
+# 英文拼写检查（仅 --lang en 时使用；缺依赖则跳过并提示，不影响中文路径）
+try:
+    from spellchecker import SpellChecker
+    _HAS_SPELL = True
+except ImportError:
+    _HAS_SPELL = False
 
 # ---------------------------------------------------------------- 错别字与易混词
 # 只收"错字几乎不可能成立"的固定词对；语境才能定对错的（权力/权利、作/做、登陆/登录）不进这张表，
@@ -65,6 +76,25 @@ FULLWIDTH_RE = re.compile(r"[０-９Ａ-Ｚａ-ｚ＃＄％＆＋？！]")
 UNIT = r"(?:GB|MB|KB|TB|kg|km|cm|mm|ml|GW|MW|GWh|MWh|亿元)"
 NUM = r"\d+(?:\.\d+)?"
 
+# 英文拼写检查的白名单：词典易误报的常用小写词 / 缩写 / 技术词（仅 --lang en 时用）
+EN_SKIP = {
+    # 通用缩写 / 小写词
+    "ai", "ml", "api", "saas", "llm", "gpt", "qa", "ui", "ux", "ok", "etc", "vs",
+    "ie", "eg", "id", "url", "app", "apps", "data", "info", "email", "csv", "json",
+    "pdf", "sql", "nosql", "web", "blog", "repo", "config", "runtime", "backend",
+    "frontend", "openai", "chatgpt", "workbuddy", "github", "gitlab", "docker",
+    "kubernetes", "kafka", "spark", "hadoop", "numpy", "pandas", "pytorch",
+    "tensorflow", "linux", "macos", "windows", "chrome", "safari", "firefox",
+    # 金融 / 财务
+    "wacc", "cagr", "ebitda", "ebit", "fcf", "ocf", "eps", "ipo", "pe", "pb",
+    # 网络 / 写作常见
+    "btw", "imo", "fyi", "asap", "faq", "seo", "sem", "ctr", "roi", "kpi",
+    # 词缀 / 派生（词典常漏）
+    "pre", "post", "non", "un", "re", "mid", "sub", "multi", "cross", "inter",
+    "dataset", "datasets", "model", "models", "token", "tokens", "embedding",
+    "embeddings", "inference", "training", "finetune", "finetuning", "param",
+}
+
 # ---------------------------------------------------------------- 通用工具
 
 
@@ -74,13 +104,19 @@ def iter_lines(text):
             yield i, line
 
 
-def scan_text(text, src=""):
-    """文字层三组检查（md/txt/docx 通用）。返回 findings 列表。"""
+def scan_text(text, src="", lang="zh"):
+    """文字层检查（md/txt/docx 通用）。返回 findings 列表。
+    lang='zh'（默认）：错别字 / 全角 / 中英文空格 / 中文语境英文词 / 数字单位；
+    lang='en'：跳出全部中文专属关，改跑英文拼写与标点（见 _scan_en）。"""
     out = []
 
     def add(tier, code, where, detail, fix):
         out.append((tier, code, where, detail, fix))
 
+    if lang == "en":
+        return _scan_en(text, src)
+
+    # ---- 以下为中文（zh）专属检查 ----
     # 1) 错别字
     for i, line in iter_lines(text):
         plain = src and f"{src} 第{i}行" or f"第{i}行"
@@ -132,6 +168,94 @@ def scan_text(text, src=""):
             add("建议", "F-UNIT", "全文",
                 f"单位 {u} 前空格写法不一致（{' 与 '.join(sorted(st))}）",
                 f"统一为其中一种（GB 系推荐「数字 {u}」）")
+
+    # 5) 中文语境中的英文词（漏译/混写）：只报"建议"，人工确认是否应为中文
+    #    全小写、长度≥4、出现在含中文的句子里 —— 大写品牌名/全大写缩写（Apple/OLED/AI）不触发
+    EN_WORD_RE = re.compile(r"[a-z]{4,}")
+    EN_ALLOW = {
+        # 编程语言/技术框架
+        "java", "python", "linux", "android", "scala", "kotlin", "golang", "ubuntu",
+        "debian", "cuda", "numpy", "pandas", "tensorflow", "pytorch", "matplotlib",
+        "github", "gitlab", "docker", "kubernetes", "react", "vue", "angular",
+        "javascript", "typescript", "postgres", "mysql", "redis", "mongodb", "sqlite",
+        "kafka", "spark", "hadoop", "protobuf", "latex", "rust", "perl", "ruby",
+        "swift", "objective", "html", "css", "json", "xml", "yaml", "ascii",
+        "unicode", "vscode", "intellij", "pycharm", "macos", "windows", "chrome",
+        "safari", "firefox", "npm", "conda",
+        # 金融/财务常见小写缩写
+        "wacc", "cagr", "ebitda", "ebit", "fcf", "ocf", "eps",
+        # 匿名化/占位（研报模板常见）
+        "competitor", "compeitor", "anonymized", "placeholder", "redacted",
+    }
+    cjk = re.compile(r"[\u4e00-\u9fff]")
+    for i, line in iter_lines(text):
+        if not cjk.search(line):
+            continue
+        plain = src and f"{src} 第{i}行" or f"第{i}行"
+        seen_words = set()
+        for m in EN_WORD_RE.finditer(line):
+            w = m.group(0)
+            if w in EN_ALLOW or w in seen_words:
+                continue
+            # 跳过 URL / 邮箱 的一部分（被 . / @ 夹住的英文串不算中文语境漏译）
+            b = line[m.start() - 1] if m.start() > 0 else ""
+            a = line[m.end()] if m.end() < len(line) else ""
+            if (b and b in "./@:") or (a and a in "./@:"):
+                continue
+            seen_words.add(w)
+            s = max(0, m.start() - 10)
+            add("建议", "F-ENWORD", plain,
+                f"中文语境中出现英文词「{w}」（…{line[s:m.end() + 10]}…）",
+                f"确认是否应为中文（漏译/混写则改回，如「{w}」本应是中文词）")
+    return out
+
+
+# ---------------------------------------------------------------- 英文（en）检查
+
+def _scan_en(text, src=""):
+    """英文文字层检查：拼写 + 标点/空格。返回 findings 列表。"""
+    out = []
+
+    def add(tier, code, where, detail, fix):
+        out.append((tier, code, where, detail, fix))
+
+    # 1) 拼写（pyspellchecker；缺依赖则跳过并提示）
+    if _HAS_SPELL:
+        spell = SpellChecker()
+        words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text)
+        cands = [w for w in words if len(w) > 2 and not w.isupper()
+                 and not any(c.isdigit() for c in w)]
+        for w in spell.unknown(cands):
+            if w.lower() in EN_SKIP:
+                continue
+            corr = spell.correction(w) or w
+            hit = None
+            for i, line in iter_lines(text):
+                if w in line:
+                    hit = (i, line)
+                    break
+            if hit:
+                i, line = hit
+                s = max(0, line.find(w) - 10)
+                add("须修", "F-EN-SPELL", (src and f"{src} 第{i}行" or f"第{i}行"),
+                    f"疑似拼写错误「{w}」（建议：{corr}；人工确认是否为专有名词）",
+                    f"改为「{corr}」")
+    else:
+        add("建议", "F-EN-SPELL", "全文",
+            "未安装 pyspellchecker，英文拼写检查已跳过（pip install pyspellchecker 后生效）",
+            "安装依赖以启用英文拼写检查")
+
+    # 2) 标点 / 空格
+    for i, line in iter_lines(text):
+        plain = src and f"{src} 第{i}行" or f"第{i}行"
+        if "  " in line:
+            add("须修", "F-EN-SPACE", plain,
+                "行内存在连续空格（英文应为单个空格）",
+                "合并为单个空格")
+        if re.search(r"[ \t][,.;:!?]", line):
+            add("须修", "F-EN-SPACE-B", plain,
+                "英文标点前有多余空格（英文标点前不加空格）",
+                "删除标点前空格")
     return out
 
 
@@ -182,14 +306,14 @@ def classify(doc):
     return heads, body
 
 
-def scan_docx(doc):
+def scan_docx(doc, lang="zh"):
     out = []
     heads, body = classify(doc)
 
     def add(tier, code, where, detail, fix):
         out.append((tier, code, where, detail, fix))
 
-    # 3) 标题层级
+    # 3) 标题层级（语言无关，中英文通用）
     seq = []
     for p in heads:
         m = HEADING_RE.match(p.style.name or "")
@@ -255,27 +379,29 @@ def scan_docx(doc):
     return out
 
 
-def fix_docx(doc, src, dst):
+def fix_docx(doc, src, dst, lang="zh"):
     """只统一中文字体与行距（占多数的值），文字逐字校验不变。"""
     heads, body = classify(doc)
     changed = 0
 
-    for group in (body, heads):
-        fonts = {}
-        for p in group:
-            for r in p.runs:
-                if r.text.strip():
-                    f = east_asia(r)
-                    if f and f.lower() not in MONO_FONTS:
-                        fonts[f] = fonts.get(f, 0) + 1
-        if len(fonts) > 1:
-            maj = max(fonts, key=fonts.get)
+    # 字体统一（仅中文：eastAsia 为中文字体属性）
+    if lang == "zh":
+        for group in (body, heads):
+            fonts = {}
             for p in group:
                 for r in p.runs:
-                    f = east_asia(r)
-                    if f and f != maj and f.lower() not in MONO_FONTS:
-                        set_east_asia(r, maj)
-                        changed += 1
+                    if r.text.strip():
+                        f = east_asia(r)
+                        if f and f.lower() not in MONO_FONTS:
+                            fonts[f] = fonts.get(f, 0) + 1
+            if len(fonts) > 1:
+                maj = max(fonts, key=fonts.get)
+                for p in group:
+                    for r in p.runs:
+                        f = east_asia(r)
+                        if f and f != maj and f.lower() not in MONO_FONTS:
+                            set_east_asia(r, maj)
+                            changed += 1
 
     spacing = {}
     for p in body:
@@ -297,7 +423,8 @@ def fix_docx(doc, src, dst):
     after = [p.text for p in after_doc.paragraphs] + \
             [c.text for t in after_doc.tables for row in t.rows for c in row.cells]
     if before != after:
-        os.remove(dst)
+        if os.path.exists(dst):
+            os.remove(dst)
         print("  ⚠ 文字逐字校验失败（字体修正不该动文字），已删除输出，放弃落地")
         return changed, False
     return changed, True
@@ -331,30 +458,33 @@ def main():
     ap.add_argument("--fix", action="store_true",
                     help="自动统一中文字体与行距（docx 专属；文字不动，逐字校验）")
     ap.add_argument("--out", help="输出路径（默认 原文件名_格式.docx）")
+    ap.add_argument("--lang", default="zh", choices=["zh", "en"],
+                    help="文档语言：zh=中文（默认，跑中文专属关）；en=英文（跳过中文关，启用拼写与标点）")
     args = ap.parse_args()
     if not os.path.exists(args.path):
-        print(f"找不到文件：{args.path}")
+        ap.error(f"找不到文件：{args.path}")
         sys.exit(2)
 
     ext = os.path.splitext(args.path)[1].lower()
+    lang = args.lang
     findings = []
 
     if ext == ".docx":
         doc = load_docx(args.path)
         heads, body = classify(doc)
         n_chars = sum(len(p.text) for p in doc.paragraphs)
-        print(f"格式审校：{args.path}")
+        print(f"格式审校：{args.path}（语言={lang}）")
         print(f"规模：{n_chars} 字｜标题段 {len(heads)}｜正文段 {len(body)}\n")
 
         text = "\n".join(p.text for p in doc.paragraphs)
-        findings += scan_text(text)
-        findings += scan_docx(doc)
+        findings += scan_text(text, lang=lang)
+        findings += scan_docx(doc, lang=lang)
         report(findings)
 
         if args.fix:
             dst = args.out or re.sub(r"\.docx$", "_格式.docx", args.path)
             print(f"\n统一中文字体/行距 → {dst}")
-            n, ok = fix_docx(doc, args.path, dst)
+            n, ok = fix_docx(doc, args.path, dst, lang=lang)
             if ok:
                 print(f"  落地 {n} 处；文字逐字校验通过（一个字符未动）")
                 print(f"  输出：{dst}（{os.path.getsize(dst)} B）")
@@ -363,9 +493,9 @@ def main():
     else:
         with open(args.path, encoding="utf-8", errors="ignore") as f:
             text = f.read()
-        print(f"格式审校（文字层）：{args.path}")
+        print(f"格式审校（文字层）：{args.path}（语言={lang}）")
         print(f"规模：{len(text)} 字符\n")
-        findings += scan_text(text)
+        findings += scan_text(text, lang=lang)
         report(findings)
         if args.fix:
             print("\n--fix 仅支持 .docx（md/txt 没有字体与行距属性）")

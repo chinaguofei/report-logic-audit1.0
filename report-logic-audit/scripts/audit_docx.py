@@ -26,7 +26,7 @@ import os
 import re
 import sys
 
-CN_NUM = "一二三四五六七八九十"
+from common import findings, add, CN_NUM
 
 # 各体裁默认必写要素（用户传 --must-have 时以用户为准）
 # 每组内为同义写法，命中任一即算"在位"——只认一个词会把「来源附录」判成缺失
@@ -57,13 +57,69 @@ CLAIM_MARKERS = ["因此", "所以", "说明", "表明", "可见", "意味着", 
                  "显示", "显然", "必然", "应当", "必须", "核心是", "关键在于",
                  "本质是", "结论是", "由此"]
 
-findings = []
+# —— 新增：逻辑冲突 / 严谨性 / 事实 / 完整性 补强（修复项，v1.1.1）——
+# R17 自相矛盾：同一主题两处相反方向判断（方向极性词表）
+CONTRA_POS = ("提升", "提高", "增加", "增长", "扩大", "增强", "上升", "改善", "加快", "领先",
+              "高于", "集中", "充足", "乐观", "利好", "上涨", "向好", "复苏", "回暖", "收紧",
+              "走强", "加速", "增进", "攀升", "走高", "偏高", "较高", "增多", "增大")
+CONTRA_NEG = ("下降", "降低", "减少", "下滑", "萎缩", "减弱", "回落", "恶化", "放缓", "落后",
+              "低于", "分散", "不足", "悲观", "利空", "下跌", "向差", "衰退", "走弱", "放松",
+              "减速", "走低", "收窄", "承压", "偏小", "偏低", "较低", "减小")
+POLARITY_ALL = set(CONTRA_POS + CONTRA_NEG)
+
+# 作为"主题词"出现太泛、易误报的词（通用名词 + 指标名词），矛盾检测排除它们
+CONTRA_STOP = set(
+    "市场 行业 公司 企业 我们 目前 中国 国内 全球 数据 情况 方面 领域 业务 产品 客户 "
+    "需求 供给 政策 时间 今年 去年 主要 重要 未来 短期 长期 海外 地区 部门 系统 规模 占比 "
+    "收入 成本 利润 营收 净利润 增速 产量 销量 价格 利率 估值 毛利率 净利率 份额 金额 业绩 "
+    "投资 风险 分析 研究 报告 影响 原因 因素 水平 状态 程度 范围 效果 质量 能力 关系 模式 "
+    "体系 结构 渠道 区域 项目 计划 目标 结果 问题 优势 劣势 机会 威胁 战略 策略 方案 措施 "
+    "建议 结论 总结 现状 趋势 变化 差异 比例 基数 指标 表现 环境 条件 标准 内容 形式".split()
+)
+
+# 时间词：两句话引用不同时期/年份时的合法变化，不算矛盾（R17 防误报闸）
+TIME_WORDS = ("一季度", "二季度", "三季度", "四季度", "上半年", "下半年", "去年同期",
+              "上年同期", "年初", "年末", "当月", "上月", "本月", "本期", "上期", "近期",
+              "同期", "短期", "长期", "当期", "过往", "过去", "历史", "当前", "目前",
+              "本年", "次年", "前年", "明年", "上季度", "下季度", "全年",
+              "Q1", "Q2", "Q3", "Q4")
+TIME_RE = re.compile(r"(?:19|20)\d{2}\s*年?")  # 4 位年份（如 2025年 / 2026）
+CYCLE_WORDS = ("周期", "景气", "波动", "起伏", "轮回")  # 周期叙事天然含上下行，非矛盾
 
 
-def add(level, code, pos, msg, detail=""):
-    """level: BLOCK / FIX / SUGGEST"""
-    findings.append({"level": level, "code": code, "pos": pos, "msg": msg, "detail": detail})
+def _has_time(s):
+    return any(w in s for w in TIME_WORDS) or bool(TIME_RE.search(s))
 
+
+def _periods(s):
+    """抽取句子所指时期签名（年份/季度/半年），用于判断两句话是否同一时期。"""
+    ps = set(TIME_RE.findall(s))
+    for w in ("Q1", "Q2", "Q3", "Q4", "上半年", "下半年", "全年"):
+        if w in s:
+            ps.add(w)
+    return ps
+
+
+def _has_cycle(s):
+    return any(w in s for w in CYCLE_WORDS)
+
+# 已知名词（嵌入极性词）：其中的极性语素不算方向信号，避免「集中度」误触发「集中」为正向
+EMBED_NOUNS = ("集中度", "增长率", "增速", "增幅", "增长量", "降幅", "下降率", "下降量",
+               "提升率", "提升空间", "提高率", "减少量", "降低率", "上升率", "升幅", "回落率")
+
+
+def _has_polarity(s, words):
+    """极性词若在已知名词（集中度/增长率…）内部，不算方向信号，避免误判。"""
+    for w in words:
+        if w in s and not any(w in n and n in s for n in EMBED_NOUNS):
+            return True
+    return False
+
+# R13 量级不匹配：量级词需配效应量
+EFFECT_WORDS = ("显著", "大幅", "明显", "决定性", "重大", "急剧", "剧烈", "骤然", "成倍",
+                "强劲", "尤为", "格外", "高度")
+# X1 有望/预计 缺条件句
+FORWARD_WORDS = ("有望", "预计", "或将", "大概率", "预料", "预期将")
 
 def cn2int(s):
     mp = {c: i + 1 for i, c in enumerate(CN_NUM[:10])}
@@ -395,6 +451,291 @@ def check_source_note(blocks, genre):
             "该体裁的全文级来源标注缺失，读者无法核证")
 
 
+# ---------------------------------------------------------------- 逻辑冲突 / 严谨性 / 事实 / 完整性 补强（修复项）
+
+def _zh_windows(s):
+    """抽取句子里所有 3–4 字中文窗口（只在中文字符段内滑动，避开数字/标点）"""
+    out = []
+    for run in re.findall(r"[\u4e00-\u9fff]+", s):
+        n = len(run)
+        for i in range(n):
+            for L in (3, 4):
+                if i + L <= n:
+                    out.append(run[i:i + L])
+    return out
+
+
+def _sentences_with_chapter(blocks):
+    """返回 [(章名, 句子)]，跳过章节标题与图/表注"""
+    out, cur = [], "开头"
+    for kind, text, style in blocks:
+        if kind != "p":
+            continue
+        m = re.match(r"^(?:#{1,6}\s*)?([%s]+)、\s*(.+)$" % CN_NUM, text)
+        if m and len(m.group(1)) <= 2:
+            cur = text[:30]
+            continue
+        if re.match(r"^(图|表)\s?\d+[：:]", text.strip()):
+            continue
+        for s in re.split(r"[。！？；\n]", text):
+            s = s.strip()
+            if 12 <= len(s) <= 300:
+                out.append((cur, s))
+    return out
+
+
+def check_contradiction(blocks):
+    """R17 · 自相矛盾（命题冲突）：同一主题在全文两处给出相反方向判断。
+
+    做法：抽 3–4 字中文实词 token（排除通用/指标名词与极性词），若某 token 至少出现在
+    两句、且一句含正向极性词、另一句含负向极性词 → 疑似矛盾。要求 3–4 字精确共现，
+    可避免「公司营收增长 vs 行业营收下降」这类不同主体的误报；两句都带时间词（如
+    上半年/下半年）时视为合法的时间变化，跳过以防误报。
+    """
+    sents = _sentences_with_chapter(blocks)
+    tok_index = {}
+    for i, (chap, s) in enumerate(sents):
+        st = s.strip()
+        # 标题/章节标题行是摘要而非事实命题，不参与矛盾配对（R17 防误报：标题 vs 正文）
+        if st.startswith("#"):
+            continue
+        pos = _has_polarity(s, CONTRA_POS)
+        neg = _has_polarity(s, CONTRA_NEG)
+        pol = 0 if (pos and neg) else (1 if pos else (-1 if neg else 0))
+        if pol == 0:
+            continue
+        seen = set()
+        for tok in _zh_windows(s):
+            if tok in seen or len(tok) < 3:
+                continue
+            seen.add(tok)
+            if tok in CONTRA_STOP or tok in POLARITY_ALL:
+                continue
+            tok_index.setdefault(tok, []).append((i, pol))
+    # 同一对句子可能共享多个 3–4 字窗口，按「句子对」去重，每对只报一次（取最长共有主题）
+    pair_tokens = {}
+    for tok, occ in tok_index.items():
+        pols = {p for _, p in occ}
+        if 1 not in pols or -1 not in pols:
+            continue
+        p = next(o for o in occ if o[1] == 1)
+        ng = next(o for o in occ if o[1] == -1)
+        key = (p[0], ng[0]) if p[0] < ng[0] else (ng[0], p[0])
+        if key not in pair_tokens or len(tok) > len(pair_tokens[key]):
+            pair_tokens[key] = tok
+    seen_pair, n = set(), 0
+    for (ia, ib), tok in pair_tokens.items():
+        if (ia, ib) in seen_pair:
+            continue
+        seen_pair.add((ia, ib))
+        c1, s1 = sents[ia]
+        c2, s2 = sents[ib]
+        # 两句都带时间词且所指时期不同 → 多半是不同时期的合法变化，跳过（R17 防误报）
+        if _has_time(s1) and _has_time(s2) and _periods(s1) != _periods(s2):
+            continue
+        # 两句都在谈周期/景气波动 → 上下行是周期叙事常态，非矛盾（R17 防误报）
+        if _has_cycle(s1) and _has_cycle(s2):
+            continue
+        add("FIX", "R17-CONTRA", "%s / %s" % (c1[:16], c2[:16]),
+            "疑似自相矛盾：两处对「%s」给出相反方向判断" % tok,
+            "①「%s」 ②「%s」——需人工确认是否同一对象、是否真矛盾（R17）" % (s1[:46], s2[:46]))
+        n += 1
+        if n >= 12:
+            break
+
+
+def check_recompute(blocks):
+    """E5 · 可复算（弱校验）：检测「由 X 到 Y，增长 Z%」类陈述，验算 Z 是否与 (Y-X)/X 一致。
+
+    只查明确给出了起点、终点与百分比的段；其余可复算项（均值/合计/排名）仍是人工项
+    （SKILL 已标注）。研报实战：正文 +100.2%、复算只得 +89.7%。
+    """
+    full = "\n".join(t for _, t, _ in blocks if t)
+    # 顺序A：先出现「由X到Y」（中间可夹「增长/提升…」动词），附近 60 字内出现「增长 Z%」
+    for m in re.finditer(r"(?:由|从)\s*([\d.]+)\s*(?:增长|提升|上升|提高|下降|降低|减少)?\s*(?:到|至|→)\s*([\d.]+)", full):
+        a, b = float(m.group(1)), float(m.group(2))
+        win = full[m.start():m.start() + 60]
+        rm = re.search(r"增长\s*([\d.]+)\s*%", win)
+        if not rm or a == 0 or b == a:
+            continue
+        rate, implied = float(rm.group(1)), (b - a) / a * 100
+        if abs(implied - rate) > 3 and abs(implied - rate) > abs(rate) * 0.15:
+            add("SUGGEST", "E5-RECOMPUTE", "全文",
+                "增速复算不一致：称由 %g 到 %g 增长 %g%%，实算应为 %g%%" % (a, b, rate, implied),
+                "用文中明细复算；研报实战 +100.2% 复算只得 +89.7%（E5）")
+    # 顺序B：先「增长 Z%」，括号内/后接「由X到Y」
+    for m in re.finditer(r"增长\s*([\d.]+)\s*%（?[^）]{0,40}?(?:由|从)\s*([\d.]+)\s*(?:到|至|→)\s*([\d.]+)", full):
+        rate, a, b = float(m.group(1)), float(m.group(2)), float(m.group(3))
+        if a == 0 or b == a:
+            continue
+        implied = (b - a) / a * 100
+        if abs(implied - rate) > 3 and abs(implied - rate) > abs(rate) * 0.15:
+            add("SUGGEST", "E5-RECOMPUTE", "全文",
+                "增速复算不一致：称增长 %g%%，由 %g 到 %g 实算应为 %g%%" % (rate, a, b, implied),
+                "用文中明细复算；研报实战 +100.2% 复算只得 +89.7%（E5）")
+
+
+def check_effect_size(blocks):
+    """R13 · 量级不匹配（弱校验）：量级词需配效应量，否则强度撑不起用词。"""
+    for kind, text, style in blocks:
+        if kind != "p" or len(text) < 12:
+            continue
+        for sent in re.split(r"[。；！？\n]", text):
+            sent = sent.strip()
+            if len(sent) < 8:
+                continue
+            hit = [w for w in EFFECT_WORDS if w in sent]
+            if not hit:
+                continue
+            has_effect = bool(re.search(r"\d", sent)) or bool(re.search(r"倍|%", sent))
+            if not has_effect:
+                add("SUGGEST", "R13-EFFECT", text[:44],
+                    "量级词「%s」需配效应量（具体百分比/倍数）" % "/".join(hit),
+                    "效应量只有 3% 却写「决定性/显著」即量级不匹配（R13）")
+
+
+def check_condition_clause(blocks):
+    """X1 · 有望/预计 类判断缺条件句：拿模糊词逃过举证。"""
+    for kind, text, style in blocks:
+        if kind != "p" or len(text) < 12:
+            continue
+        for sent in re.split(r"[。；！？\n]", text):
+            sent = sent.strip()
+            if len(sent) < 8:
+                continue
+            if not any(w in sent for w in FORWARD_WORDS):
+                continue
+            has_cond = any(w in sent for w in ("若", "如果", "假如", "除非", "一旦", "前提", "假设", "情景", "条件下", "届时")) \
+                or bool(re.search(r"在[^，。；]{0,12}下", sent))
+            if not has_cond:
+                add("SUGGEST", "X1-COND", text[:44],
+                    "「有望/预计」类判断缺条件句，请补「若 X 则 Y」",
+                    "拿模糊词逃过举证（X1）；补全成立条件或降级为推测")
+
+
+def _sections(blocks):
+    """把文档切成「标题 + 正文范围」。标题 = markdown 标题（# 起）或「一、」编号段。
+    返回 [{'idx','title','start','end'}]；标题之前的内容归入「开头」段。"""
+    secs, cur = [], None
+    for i, (kind, text, style) in enumerate(blocks):
+        if kind != "p":
+            continue
+        t = text.strip()
+        m = re.match(r"^#{1,6}\s+(.+)$", t)
+        m2 = re.match(r"^([%s]{1,2})[、.．]\s*(.+)$" % CN_NUM, t)
+        if m or m2:
+            if cur is not None:
+                cur["end"] = i
+                secs.append(cur)
+            title = (m.group(1) if m else m2.group(2)).strip()
+            title = re.sub(r"^[%s]{1,2}[、.．]\s*" % CN_NUM, "", title)
+            cur = {"idx": i, "title": title, "start": i + 1}
+    if cur is not None:
+        cur["end"] = len(blocks)
+        secs.append(cur)
+    if not secs:
+        return [{"idx": -1, "title": "（全文）", "start": 0, "end": len(blocks)}]
+    if secs[0]["idx"] > 0:
+        secs.insert(0, {"idx": -1, "title": "（开头）", "start": 0, "end": secs[0]["idx"]})
+    return secs
+
+
+def _title_hit(title, kws):
+    return any(title.startswith(kw) or title == kw for kw in kws)
+
+
+def check_abstract_conclusion(blocks):
+    """关三·7 · 摘要与结论一致：结论提出的主张/数据若摘要完全未涉及 → 疑似不一致。"""
+    secs = _sections(blocks)
+    front = [s for s in secs if _title_hit(s["title"], ("摘要", "执行摘要", "核心结论", "一页版", "要点", "速览", "观点"))]
+    tail = [s for s in secs if _title_hit(s["title"], ("结论", "总结", "小结", "结语", "投资建议", "投资结论", "收尾"))]
+    if not front or not tail:
+        return
+    abs_text = "\n".join("\n".join(t for _, t, _ in blocks[s["start"]:s["end"]]) for s in front)
+    conc_text = "\n".join("\n".join(t for _, t, _ in blocks[s["start"]:s["end"]]) for s in tail)
+    # 1) 结论关键数据未在摘要出现
+    for num in set(re.findall(r"[\d.]+%?", conc_text)):
+        if len(num) >= 2 and num not in abs_text:
+            add("SUGGEST", "C-ABS-CONCL-NUM", "结论/摘要",
+                "结论含关键数据「%s」，摘要未提及，二者口径可能不一致" % num,
+                "摘要与结论须同一件事、同一口径（关三·7）")
+            break
+    # 2) 结论主张的主题词在摘要完全未出现 → 疑似新增不一致
+    for s in re.split(r"[。！？；\n]", conc_text):
+        s = s.strip()
+        if len(s) < 12 or not any(k in s for k in CLAIM_MARKERS):
+            continue
+        toks = set(_zh_windows(s)) - CONTRA_STOP - POLARITY_ALL
+        if not any(tok in abs_text for tok in toks):
+            add("SUGGEST", "C-ABS-CONCL-DIV", "结论/摘要",
+                "结论主张「%s」未在摘要中体现，摘要与结论可能不一致" % s[:40],
+                "摘要与结论须同一件事、同一口径（关三·7）")
+            break
+
+
+def check_conclusion_first(blocks, genre):
+    """关三·6 · 公文/方案结论先行：结论/建议章不应压在末尾（除非开头已有摘要）。"""
+    if genre not in ("report-gov", "plan"):
+        return
+    secs = _sections(blocks)
+    if len(secs) < 3:
+        return
+    front_exist = any(_title_hit(s["title"], ("摘要", "执行摘要", "核心结论", "一页版", "要点")) for s in secs)
+    for pos, s in enumerate(secs, 1):
+        if _title_hit(s["title"], ("建议", "对策", "措施", "结论", "总结", "下一步", "工作打算", "打算")) \
+                and pos > max(1, round(len(secs) * 2 / 3)) and not front_exist:
+            add("SUGGEST", "C-CONCL-NOT-FIRST", s["title"][:30],
+                "公文/方案体裁：结论应前置（结论先行），当前结论/建议章偏后",
+                "领导先看第一段；建议把核心结论/建议提到开头或独立摘要（关三·6）")
+
+
+# ---------------------------------------------------------------- 关四 · 逻辑缺失补强（v1.1.2）
+
+STRONG_CLAIM = ("因此", "所以", "说明", "表明", "证明", "反映出", "意味着", "结论是",
+                "可见", "由此", "综上", "由此可见", "由此可知", "关键在于", "核心是",
+                "本质是", "不难看出", "足以说明")
+
+# 汇总章白名单：这些章本来就是结论/摘要，不要求内部论证，排除防误报
+_LOGIC_GAP_SKIP = ("摘要", "执行摘要", "核心结论", "一页版", "要点", "速览", "观点",
+                   "结论", "总结", "小结", "结语", "投资建议", "投资结论", "收尾",
+                   "附录", "数据来源", "免责", "说明", "参考文献", "目录", "引言", "前言")
+# 证据供给信号：数字 + 下列任一（或指向图/表）
+_LOGIC_GAP_DATA = (r"\d", "数据", "年报", "公告", "来源", "统计", "测算", "调研", "样本",
+                   "案例", "显示", "据", "研报", "文献", "图表", "披露", "报告", "口径",
+                   "同比", "环比", "增速", "增幅", "%", "亿元", "万元", "GWh", "万台", "倍")
+_LOGIC_GAP_FIG = r"如图|见图|如下表|见下表|图\s?\d|表\s?\d|图表\s?\d"
+_LOGIC_GAP_MECH = ("因为", "由于", "导致", "带动", "源于", "通过", "机制", "传导", "取决于",
+                   "依赖", "驱动", "使得", "从而", "在于", "受.*影响", "受制于", "背后是",
+                   "本质上是", "根源", "推手", "关键在", "得益于", "受益于", "其原因是")
+
+
+def check_logic_gap(blocks):
+    """关四 · 逻辑缺失（v1.1.2 新增）：论证章甩出结论，但整节既无证据供给、也无机制说明。
+
+    与 check_reasoning 的「逐句五落点」互补：那个看单句窗口（前2后1），这个看整节供给。
+    只查「非汇总章」——摘要/结论/投资建议/收尾等允许只做总结，否则把总结章误判为缺失。
+    指向图N/表N（视觉证据）也视为有供给，因为图内文字是像素、脚本读不到（避免误报）。
+    """
+    secs = _sections(blocks)
+    for s in secs:
+        title = s["title"]
+        if any(title.startswith(k) or title == k for k in _LOGIC_GAP_SKIP):
+            continue
+        body = "\n".join(t for _, t, _ in blocks[s["start"]:s["end"]])
+        has_data = (bool(re.search(r"\d", body)) and bool(re.search("|".join(_LOGIC_GAP_DATA[1:]), body))) \
+            or bool(re.search(_LOGIC_GAP_FIG, body))
+        has_mech = bool(re.search("|".join(_LOGIC_GAP_MECH), body))
+        if has_data or has_mech:
+            continue                                    # 整节有供给 → 不算逻辑缺失
+        hits = [t.strip() for _, t, _ in blocks[s["start"]:s["end"]]
+                if t and len(t) >= 18 and any(mk in t for mk in STRONG_CLAIM)]
+        if not hits:
+            continue                                    # 该节无强结论 → 不报（过渡段/空壳章天然不含强结论）
+        add("SUGGEST", "L4-LOGIC-GAP", title[:30],
+            "逻辑缺失：本章给出结论性判断，但整节未见证据供给或机制说明",
+            "从证据到主张那一跳走不通（关四）；补数据/案例或机制链（R3/R1）。例如：「%s」" % hits[0][:36])
+
+
 # ---------------------------------------------------------------- 主张—证据对照
 
 def build_claim_table(blocks):
@@ -557,7 +898,12 @@ def main():
     ap.add_argument("--industry", default="")
     ap.add_argument("--industry-alt", default="")
     ap.add_argument("--claim-table", action="store_true", help="输出「主张→证据」对照表")
+    ap.add_argument("--lang", default="zh", choices=["zh", "en"],
+                    help="文档语言：zh 中文（默认）/ en 英文（跳过中文专属机械关，六关语义推理由 LLM 对英文文本执行）")
     a = ap.parse_args()
+    if not os.path.isfile(a.path):
+        ap.error(f"找不到文件：{a.path}")
+
 
     blocks = load_blocks(a.path)
     if not blocks:
@@ -583,9 +929,23 @@ def main():
     elif genre not in ("report-gov", "plan"):
         # 公文/方案要求结论先行，不查"结论是否在最末"
         check_conclusion_pos(blocks)
+    else:
+        # 公文/方案：查结论是否前置（关三·6）
+        check_conclusion_first(blocks, genre)
     check_must_have(blocks, must)
     matrix = check_industry_matrix(blocks, a.industry, a.industry_alt)
     check_primary_order(blocks, a.industry, a.industry_alt)
+    # 全体裁补强：逻辑冲突 / 事实可复算 / 严谨性量级 / 有望条件句 / 摘要结论一致
+    # 自相矛盾机械关依赖 3–4 字中文窗口，仅中文有效；英文交给 LLM 六关推理覆盖
+    if a.lang == "zh":
+        check_contradiction(blocks)
+    else:
+        print("（en 模式：跳过中文专属「自相矛盾」机械关；语义矛盾由 LLM 六关推理覆盖）")
+    check_recompute(blocks)
+    check_effect_size(blocks)
+    check_condition_clause(blocks)
+    check_abstract_conclusion(blocks)
+    check_logic_gap(blocks)   # 关四·逻辑缺失（全体裁）
     claims = build_claim_table(blocks) if a.claim_table else []
 
     order = {"BLOCK": 0, "FIX": 1, "SUGGEST": 2}

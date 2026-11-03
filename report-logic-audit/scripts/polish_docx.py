@@ -459,7 +459,7 @@ def main():
     args = ap.parse_args()
 
     if not os.path.exists(args.path):
-        print(f"找不到文件：{args.path}")
+        ap.error(f"找不到文件：{args.path}")
         return 2
     ext = os.path.splitext(args.path)[1].lower()
     if ext in (".html", ".htm"):

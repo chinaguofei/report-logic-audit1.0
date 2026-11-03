@@ -2,7 +2,7 @@
 
 交付前用。它不判你的观点对不对，只判三件事：**话有没有说通、证据够不够、推理有没有收到落点。**
 
-适用于任何已完成的中文文章：研报与行业报告、评论时评、学术论文与综述、科普、方案与可行性、汇报公文、白皮书、讲稿、教程 SOP。
+适用于任何已完成的中文文章（英文等外文加 `--lang en`，详见下方「外文支持」）：研报与行业报告、评论时评、学术论文与综述、科普、方案与可行性、汇报公文、白皮书、讲稿、教程 SOP。
 
 ---
 
@@ -65,6 +65,7 @@
 
 - **Python 3.8+**。除 `.docx` 外只用标准库，无第三方依赖。
 - 读 `.docx` 需要 `python-docx`：`pip install python-docx`。读 `.md / .txt / .html` 零依赖。
+- 英文拼写检查（仅 `--lang en` 时）需要 `pyspellchecker`：`pip install pyspellchecker`（纯 Python、离线词库、无网络请求）；未装则自动跳过拼写关并提示，不影响中文路径。
 - 无网络请求、无外部 API、不读技能目录以外的文件。`--apply` 只写你指定的输出文件。
 
 ## 快速开始（30 秒看效果）
@@ -166,6 +167,17 @@ python scripts/polish_docx.py examples/sample-bad-article.md
 
 `--fix`（docx 专属）只统一中文字体与正文行距（落在占多数的值上），**落地前后逐段比对文字，多一个字符就整份放弃**；错别字、全角字符、标题层级、字号永不自动改。
 
+### 外文支持（v1.1.9）
+
+六关**语义推理层与语言无关**——论点—证据闭环、逻辑链条、推理终结等由 LLM 直接读英文文本判定，换语言只是换输入。但**格式关是语言专属的**，需显式切到英文模式：
+
+- **格式审校**：`python check_format.py article_en.md --lang en`
+  - 跳过全中文专属关（错别字词表、全角、中英文空格、中文语境英文词、eastAsia 字体）；
+  - 改跑英文专属关：拼写（pyspellchecker，缺依赖自动跳过并提示）、标点前多余空格、行内连续空格。
+  - **不传 `--lang` 时默认 `zh`**，英文文档会几乎零命中——英文文档务必带 `--lang en`。
+- **机械六关**：`python audit_docx.py article_en.md --lang en` 跳过中文专属的「自相矛盾」机械关；其余结构关按 CJK 标记判定，英文文档安全不误报；语义矛盾仍由 LLM 六关覆盖。
+- 英文文章体裁信号与中文同构，`--genre` 仍可用 `essay / academic / research / plan / report-gov / copy / speech / howto`。
+
 ## 参数速查
 
 ```bash
@@ -241,21 +253,22 @@ python scripts/audit_docx.py 新稿.docx || { echo "有阻断项，不许发布"
 report-logic-audit/
 ├── SKILL.md                      # 技能定义：六关判据、输出模板、纪律与边界
 ├── README.md
-├── LICENSE                       # MIT
+├── LICENSE.md                    # MIT
 ├── requirements.txt
 ├── CHANGELOG.md
 ├── references/
-│   ├── genre-packs.md            # 9 种体裁：判定信号 / 必写要素 / 专属判据 / 高频病灶
+│   ├── genre-packs.md            # 9 种中文体裁 + 第 10 节外文（英文）审核要点
 │   └── logic-patterns.md         # 32 条病灶库：E 证据层 8 / R 推理层 16 / X 表达层 8
 ├── scripts/
 │   ├── summarize_outline.py      # 论证骨架
-│   ├── audit_docx.py             # 六关机械检查
+│   ├── audit_docx.py             # 六关机械检查（支持 --lang en）
 │   ├── check_reasoning.py        # 推理终结
 │   ├── polish_docx.py            # 润色
-│   ├── check_format.py           # 格式审校（排版/字体/错别字/全半角）
+│   ├── check_format.py           # 格式审校（排版/字体/错别字/全半角，支持 --lang en）
 │   └── check_fig_units.py        # 图内单位（需绘图脚本按约定写常量）
 └── examples/
-    └── sample-bad-article.md     # 故意写坏的样例，用于自测
+    ├── sample-bad-article.md     # 故意写坏的中文样例，用于自测
+    └── sample-bad-article-en.md  # 故意写坏的英文样例（--lang en 演示）
 ```
 
 ## SkillHub 发布信息（填表直接抄）

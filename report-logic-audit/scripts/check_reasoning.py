@@ -3,7 +3,14 @@
 
 "看起来有道理"和"推到了终点"是两件事。本脚本判的是后者：
 每条结论性断言，是否给出 ①依据 ②机制 ③条件/边界 ④反例处理 ⑤可证伪判据。
-五项全有 = 已终结；有机制无条件 = 半终结；只有主张 = 未终结。
+已终结：五落点齐，或含「机制 + 可证伪判据」且至少 3 项（可证伪判据是真正的分水岭，
+带判据的结论不再被压低）；半终结：≥2 项但缺可证伪判据；未终结：只有主张。
+
+v1.1.2 增强：
+- 主张识别扩到「我们认为/看好/警惕/将成为/是趋势」等观点研判写法；
+- 「依据」改为节级数据感知（数据落表格/隔段不再漏判为无依据）；
+- 新增 R1 相关当因果 / R3 中间环节缺失 / R10 归因单一 的可识别形态（SUGGEST）；
+- 新增「推理厚度」指标（平均落点/5），快速看全文是否"只甩结论不论证"。
 
 机器只能给出"落点缺哪几项"的定位，判断仍需人来做——
 它省掉的是逐句翻找的时间，不是判断本身。
@@ -22,19 +29,26 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit_docx import load_blocks, cn2int  # noqa: E402
-
-CN_NUM = "一二三四五六七八九十"
+from common import findings, add, CN_NUM
+from audit_docx import load_blocks, cn2int, _sections  # noqa: E402
 
 CLAIM_MARKERS = ["因此", "所以", "说明", "表明", "可见", "意味着", "证明", "反映出",
                  "显示", "显然", "必然", "应当", "必须", "核心是", "关键在于",
                  "本质是", "结论是", "由此", "综上", "由此可见"]
 
+# 观点/研判类主张（v1.1.2 新增识别）：研报/评论里大量用这类写法承载结论
+VIEWS = ("我们认为", "笔者", "看好", "警惕", "值得关注", "需要重视", "需重视",
+         "将成为", "是趋势", "预计将", "倾向于", "不难看出", "足以说明", "有理由认为")
+
 # 落点五要素的识别词族
+# 注意：「机制」只收"解释性"词（因为/由于/源于/通过/机制/传导…）。
+# 因果断言动词（导致/带动/使得/从而…）不放这里——否则"X带动Y"这种断言本身就被当成
+# 机制已满足，R3 永远报不出来。那些词交给 R3-MECH-MISS 单独识别。
 SLOTS = {
     "依据": ("据", "来源", "年报", "公告", "数据", "统计", "样本", "测算", "调研", "报告"),
-    "机制": ("因为", "由于", "导致", "带动", "源于", "通过", "机制", "传导", "取决于",
-             "依赖", "驱动", "使得", "从而"),
+    "机制": ("因为", "由于", "源于", "通过", "机制", "传导", "取决于",
+             "依赖", "驱动", "在于", "受.*影响", "受制于", "背后是", "本质上是",
+             "根源", "推手", "关键在", "得益于", "受益于", "其原因是", "原因在于"),
     "条件": ("若", "如果", "条件下", "除非", "仅当", "前提", "假设", "上限",
              "下限", "区间", "情景"),
     "反例": ("但", "然而", "不过", "反例", "例外", "另一方面", "风险", "不及预期",
@@ -67,17 +81,15 @@ def is_judgement(sent):
         return False
     return len(sent) >= 15
 
-findings = []
-
-
-def add(level, code, pos, msg, detail=""):
-    findings.append({"level": level, "code": code, "pos": pos, "msg": msg, "detail": detail})
-
-
 def split_sents(blocks):
-    """按章节切分并分句，返回 [{chap, idx, sent}]"""
+    """按章节切分并分句，返回 [{chap, sent, bi, sec}]（bi=块序号，sec=所属节序号）"""
     out, chap = [], "开头"
-    for kind, text, style in blocks:
+    secs = _sections(blocks)
+    sec_of = {}
+    for si, s in enumerate(secs):
+        for bi in range(s["start"], s["end"]):
+            sec_of[bi] = si
+    for bi, (kind, text, style) in enumerate(blocks):
         if kind != "p":
             continue
         m = re.match(r"^(?:#{1,6}\s*)?([%s]+)、\s*(.+)$" % CN_NUM, text)
@@ -89,24 +101,56 @@ def split_sents(blocks):
         for s in re.split(r"[。！？；\n]", text):
             s = s.strip()
             if 10 <= len(s) <= 300:
-                out.append({"chap": chap, "sent": s})
+                out.append({"chap": chap, "sent": s, "bi": bi, "sec": sec_of.get(bi, -1)})
     return out
 
 
-def slots_hit(window):
-    """在上下文窗口中检查五要素命中（词表 + 正则两类判据）"""
+# 节级"数据供给"判定：该节是否含「数字 + 数据类词」的句子（避免表格数据隔段被漏判为无依据）
+_SEC_DATA_WORDS = ("数据", "年报", "公告", "来源", "统计", "测算", "调研", "样本",
+                   "案例", "显示", "据", "研报", "文献", "图表", "披露", "报告", "口径",
+                   "同比", "环比", "增速", "增幅", "%", "亿元", "万元", "GWh", "万台", "倍")
+
+
+def compute_sec_data(blocks, secs):
+    res = {}
+    for si, s in enumerate(secs):
+        present = False
+        for i in range(s["start"], s["end"]):
+            kind, text, style = blocks[i]
+            if kind != "p":
+                continue
+            if re.search(r"\d", text) and re.search("|".join(_SEC_DATA_WORDS), text):
+                present = True
+                break
+        res[si] = present
+    return res
+
+
+def slots_hit(window, sec_has_data=False):
+    """在上下文窗口中检查五要素命中（词表 + 正则两类判据）。
+
+    「依据」额外接受节级数据供给：若整节含数字+数据词，则视为依据在场——
+    数据常落在表格或隔段，强制只看前2后1句会把这类正常结论误判为无依据。
+    """
     out = {}
     for k, words in SLOTS.items():
         hit = any(w in window for w in words)
         if not hit and k in SLOT_REGEX:
             hit = bool(re.search(SLOT_REGEX[k], window))
+        if k == "依据" and not hit and sec_has_data:
+            hit = True
         out[k] = hit
     return out
 
 
 def grade(slots):
     n = sum(slots.values())
-    if n >= 4:
+    has_mech = slots["机制"]
+    has_cri = slots["判据"]
+    # 已终结：五落点齐，或（含机制且含判据且至少 3 项）。可证伪判据是真正的分水岭——
+    # 修复：旧版「n>=4 即已终结」会让「依据+机制+条件+反例（无判据）」被判定强于
+    # 「依据+机制+判据」，与「可证伪性才是核心增量」自相矛盾；现改为带判据即更强。
+    if n == 5 or (has_mech and has_cri and n >= 3):
         return "已终结"
     if n >= 2:
         return "半终结"
@@ -119,11 +163,13 @@ def find_window(sents, i, span=3):
     return "。".join(s["sent"] for s in sents[lo:hi])
 
 
-def check_claims(sents, strict, top):
+def check_claims(sents, sec_data, strict, top):
     claims = []
     for i, s in enumerate(sents):
         sent = s["sent"]
-        if not any(k in sent for k in CLAIM_MARKERS) and not is_judgement(sent):
+        if not (any(k in sent for k in CLAIM_MARKERS)
+                or is_judgement(sent)
+                or any(v in sent for v in VIEWS)):
             continue
         # 排除纯方法/结构/定义说明句（不是主张）
         if re.search(r"^(本报告|本篇|以下|下面|上图|下表|图中|表中)", sent):
@@ -134,12 +180,16 @@ def check_claims(sents, strict, top):
         if re.match(r"^(数据显示|据统计|根据|按照|据[^，,]{0,12}(报告|公告|统计|年报|调研))", sent):
             continue
         win = find_window(sents, i)
-        slots = slots_hit(win)
+        sec_has_data = sec_data.get(s["sec"], False)
+        slots = slots_hit(win, sec_has_data)
         g = grade(slots)
         miss = [k for k, v in slots.items() if not v]
+        has_claim_marker = any(k in sent for k in CLAIM_MARKERS) or any(v in sent for v in VIEWS)
         claims.append({"chap": s["chap"], "claim": sent[:120], "grade": g,
                        "missing": miss, "abs": any(w in sent for w in ABSOLUTE),
+                       "slots_sum": sum(slots.values()),
                        "marker": next((k for k in CLAIM_MARKERS if k in sent), "判断句")})
+        # —— 五落点缺口（原有逻辑）——
         if g == "未终结":
             # 机械判据只看"落点位置"，不足以阻断交付；默认提示，--strict 升为须修
             add("FIX" if strict else "SUGGEST", "RSN-OPEN", s["chap"],
@@ -147,6 +197,25 @@ def check_claims(sents, strict, top):
         if any(w in sent for w in ABSOLUTE) and "条件" in miss:
             add("FIX" if strict else "SUGGEST", "RSN-ABS-NOCOND", s["chap"],
                 f"绝对化结论无条件限定：{sent[:40]}", "「必然/一定会」类结论必须给成立条件")
+        # —— v1.1.2 新增：可识别的推理病灶（SUGGEST，需人确认）——
+        # R3 中间环节缺失：断言了因果动词，但机制落点缺失
+        if has_claim_marker and "机制" in miss and \
+                any(w in sent for w in ("导致", "带动", "推动", "使得", "引发", "拉动", "驱动", "带来", "推升", "从而")):
+            add("SUGGEST", "R3-MECH-MISS", s["chap"],
+                f"直接断言因果但无传导机制：{sent[:40]}", "从 A 到 B 中间环节缺失（R3）；补传导链每一环、标注时滞与卡点")
+        # R1 相关当因果：在共现/背景下直接下因果结论，且机制缺失
+        if has_claim_marker and "机制" in miss and \
+                any(w in sent for w in ("随着", "伴随", "背景下", "同期", "与此同时", "在此情况下")):
+            add("SUGGEST", "R1-CORR-CAUSE", s["chap"],
+                f"相关/共现当因果：{sent[:40]}", "同时发生≠它引起（R1）；给机制或排除共同原因（第三变量）")
+        # R10 归因单一（β当α）：行业/整体向好 + 公司/个股受益，且无同业对照
+        if has_claim_marker and \
+                any(w in sent for w in ("行业", "板块", "整体", "大盘", "需求", "景气度", "产业")) and \
+                any(w in sent for w in ("提升", "增长", "上行", "回暖", "向好", "高增", "改善")) and \
+                any(w in sent for w in ("公司", "个股", "该企业", "该标的", "龙头", "公司层面", "其自身")) and \
+                any(w in sent for w in ("受益", "驱动", "带动", "利好", "弹性", "抢占")):
+            add("SUGGEST", "R10-ATTRIB", s["chap"],
+                f"疑似将行业β当公司α：{sent[:40]}", "行业涨≠公司强（R10）；拆分 β 与 α、给同业对照基线")
     cnt = {k: sum(1 for c in claims if c["grade"] == k) for k in ("已终结", "半终结", "未终结")}
     if claims:
         density = len(claims) * 1000.0 / max(1, sum(len(s["sent"]) for s in sents))
@@ -198,6 +267,9 @@ def main():
     ap.add_argument("--strict", action="store_true", help="未终结断言按阻断处理")
     ap.add_argument("--top", type=int, default=20)
     a = ap.parse_args()
+    if not os.path.isfile(a.path):
+        ap.error(f"找不到文件：{a.path}")
+
 
     blocks = load_blocks(a.path)
     if not blocks:
@@ -205,7 +277,8 @@ def main():
         return 2
 
     sents = split_sents(blocks)
-    claims, cnt = check_claims(sents, a.strict, a.top)
+    sec_data = compute_sec_data(blocks, _sections(blocks))
+    claims, cnt = check_claims(sents, sec_data, a.strict, a.top)
     jumps = check_jumps(sents)
     check_circular(sents)
 
@@ -213,9 +286,11 @@ def main():
     findings.sort(key=lambda f: order.get(f["level"], 9))
     cc = {k: sum(1 for f in findings if f["level"] == k) for k in ("BLOCK", "FIX", "SUGGEST")}
 
+    avg_slots = (sum(c["slots_sum"] for c in claims) / len(claims)) if claims else 0.0
     print(f"=== 推理终结检查 · {os.path.basename(a.path)} ===")
     print(f"分句 {len(sents)} 句 | 结论性断言 {len(claims)} 条 "
           f"（已终结 {cnt['已终结']} / 半终结 {cnt['半终结']} / 未终结 {cnt['未终结']}）")
+    print(f"推理厚度：平均落点 {avg_slots:.1f}/5（越高越扎实；<2.5 多为「只甩结论不论证」）")
 
     open_claims = [c for c in claims if c["grade"] != "已终结"]
     if open_claims:

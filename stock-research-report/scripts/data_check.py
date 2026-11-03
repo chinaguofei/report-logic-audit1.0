@@ -78,7 +78,11 @@ def check_yoy(recs, n=2):
             if v is None or b is None or abs(b) < 1e-4:
                 continue
             if stored is None:
-                rec(f"{c['q']}{nm}同比", False, f"矩阵为 --，但可算出 {(v-b)/abs(b)*100:+.2f}%（基数 {b:.2f}）")
+                # 扭亏/转亏（基期与当期异号）属合规的定性标注，不应判为缺失
+                if (v is not None) and (b is not None) and (v * b < 0):
+                    rec(f"{c['q']}{nm}同比", True, f"矩阵标记扭亏/转亏（{v:+.2f} 与基期 {b:+.2f} 异号），合规定性标注")
+                else:
+                    rec(f"{c['q']}{nm}同比", False, f"矩阵为 -- 且无异号翻转，但可算出 {(v-b)/abs(b)*100:+.2f}%（基数 {b:.2f}）")
                 continue
             calc = (v - b) / abs(b) * 100
             # 容差自适应：基数/差值越小，2 位小数舍入对同比影响越大（最大 ~0.005 亿舍入）

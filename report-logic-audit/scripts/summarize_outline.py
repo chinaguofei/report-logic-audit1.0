@@ -25,10 +25,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import CN_NUM
 from audit_docx import load_blocks, cn2int  # noqa: E402
 from check_reasoning import CLAIM_MARKERS, is_judgement  # noqa: E402
-
-CN_NUM = "一二三四五六七八九十"
 
 # 标题特征词 → 论证路径
 PATH_SIGNALS = [
@@ -270,7 +269,7 @@ def main():
     args = ap.parse_args()
 
     if not os.path.exists(args.path):
-        print(f"找不到文件：{args.path}")
+        ap.error(f"找不到文件：{args.path}")
         return 2
     blocks = load_blocks(args.path)
     if not blocks:

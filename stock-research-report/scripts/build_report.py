@@ -366,6 +366,22 @@ def main():
               "报告中的预测、估值与判断均存在不确定性，投资者应独立判断并自行承担投资风险。"
               "股市有风险，入市需谨慎。", size=8.5)
 
+    # v1.1.9 第五关 · 图表可读性门禁（v1.2.2 前置到 doc.save 之前：FAIL 时不得落盘半成品）
+    # 扫描 {工作区}/data/draw_*.py；WORKSPACE_ROOT 指向含 data/ 目录的会话工作区根
+    import subprocess
+    _gate = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "scripts", "check_fig_readability.py")
+    # 模板约定 CWD＝会话工作区根（OUT_SRC="data/..." 同样依赖此约定）
+    _fig_dir = os.path.join(os.getcwd(), "data")
+    if os.path.isfile(_gate):
+        _r = subprocess.run([sys.executable, _gate, _fig_dir], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
+        _summary = [ln for ln in _r.stdout.splitlines() if ln.startswith("脚本 ")]
+        print("[第五关 可读性]", _summary[-1] if _summary else "no summary")
+        assert _r.returncode == 0, "图表可读性门禁 FAIL（禁止交付）：\n" + (_r.stdout + _r.stderr)[-3000:]
+    else:
+        print("[第五关 可读性] 警告：技能内门禁脚本缺失，须人工逐张目视 12 张 PNG")
+
     doc.save(OUT_SRC)
     print("saved:", OUT_SRC)
 

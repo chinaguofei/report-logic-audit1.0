@@ -10,7 +10,10 @@
 | **注意** | 东财业绩快报 `RPT_LICO_FN_CPD` | 累计业绩 | 次新股追溯不全（688655 缺 2021 前季度、603312 无 2021 季度）；扣非字段可能为空 → 一律以 F10 MAINFINADATA 为准，此接口只作交叉核 |
 | **慎用** | 同花顺/雪球等非公开接口 | — | 未验证稳定性，不主动访问 |
 
-**执行规则**：新报告取数先走「首选」两行；首选失败一次即切换同用途的另一个首选源（不重试备用超过 1 次）；把本次源表现记入报告 meta.source 溯源。
+**执行规则（2026-11-04 升级：首取即首选，跑一半不许换道）**：
+1. **开跑第一枪就必须打「首选」两行的源**，禁止先试任何备用/慎用源——曾多次因先打 push2his 被限流，跑到中途被迫切换返工。
+2. 首选失败 1 次即切换同用途的另一个首选源（不重试备用超过 1 次）。
+3. 把本次源表现记入报告 meta.source 溯源。
 
 ## 代码前缀规则
 
@@ -34,18 +37,7 @@ curl -s "https://qt.gtimg.cn/q=sz002536" | iconv -f gbk -t utf-8
 
 ## 日 K 线（前复权）
 
-**A 股主源：东财 push2his kline（`fqt=1` 前复权，一次取全历史；腾讯为备源）**
-
-```bash
-curl -s "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=0.002536&klt=101&fqt=1&beg=0&end=20500101&lmt=490&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" -H "User-Agent: Mozilla/5.0" -H "Referer: https://quote.eastmoney.com/"
-```
-
-- secid 前缀：深市 `0.`、沪市 `1.`；klt=101 日线；fqt=1 前复权（估值通道用 `fqt=0` 不复权，勿混）
-- 返回 `data.klines` 逗号拼接串：`日期,开,收,高,低,量(手),额,振幅,涨跌幅,涨跌额,换手` —— 列序为**开,收,高,低**（与腾讯不同）；量单位手，×100 换算成股
-- **push2his 域限流频繁**（见文末「已知故障」，2026-09-27/28 两次实测不可达）→ 不可达时**直接用腾讯备源**，勿反复重试
-- `draw_kline.py` 的 `_load_bars` 自动兼容东财/腾讯两种返回格式
-
-**备源：腾讯 fqkline**
+**A 股主源：腾讯 fqkline（2026-11-04 定稿：首选即主源，push2his 只作备源）**
 
 ```bash
 # A 股
@@ -56,6 +48,18 @@ curl -s "https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hk03696,day,
 
 - A 股 JSON 取 `data.{code}.qfqday`；港股取 `hkfqkline`
 - 每根为 `[日期, 开, 收, 高, 低, 成交量(手)]`
+- 腾讯 K 线全程零故障记录；**第一枪必须打腾讯**，勿再先试 push2his
+
+**备源：东财 push2his kline（仅在腾讯缺字段/失败时用一次）**
+
+```bash
+curl -s "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=0.002536&klt=101&fqt=1&beg=0&end=20500101&lmt=490&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" -H "User-Agent: Mozilla/5.0" -H "Referer: https://quote.eastmoney.com/"
+```
+
+- secid 前缀：深市 `0.`、沪市 `1.`；klt=101 日线；fqt=1 前复权（估值通道用 `fqt=0` 不复权，勿混）
+- 返回 `data.klines` 逗号拼接串：`日期,开,收,高,低,量(手),额,振幅,涨跌幅,涨跌额,换手` —— 列序为**开,收,高,低**（与腾讯不同）；量单位手，×100 换算成股
+- **push2his 域限流频繁**（见文末「已知故障」，2026-09-27/28 两次实测不可达）→ 只作备源，被掐后等 60s 或回腾讯，勿反复重试
+- `draw_kline.py` 的 `_load_bars` 自动兼容东财/腾讯两种返回格式
 
 ## 财务数据（A 股）
 

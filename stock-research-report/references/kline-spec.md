@@ -59,7 +59,7 @@ for f in ["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "DejaVu San
 ## 复权口径与数据源（2026-09-27 用户定调，永久生效）
 
 - **K 线一律用官方已做前复权的数据，直接调用接口，禁止本地复权计算，禁止用不复权价画图** —— 不做前复权 K 线失真（除权日假跳空、均线断裂）。
-- A 股主源：东财 push2his kline `fqt=1`（一次全历史）；备源：腾讯 fqkline `qfq`。取数 URL 与字段见 `data-sources.md`。
+- A 股主源：腾讯 fqkline `qfq`（2026-11-04 定稿，首选即主源）；备源：东财 push2his `fqt=1`（仅腾讯失败时用一次）。取数 URL 与字段见 `data-sources.md`。
 - 港股主源仍是腾讯 `hkfqkline` `qfq`。
 - 与估值通道图（PB 或 PS，均为不复权 `fqt=0`）口径不同、各有依据，禁止混用。
 

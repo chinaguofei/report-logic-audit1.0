@@ -55,10 +55,10 @@ raw = json.load(open(SRC, encoding="utf-8"))
 
 def _load_bars(raw):
     """兼容两种来源（列统一为 [日期, 开, 收, 高, 低, 量(股)]）：
-    1) 东财 push2his kline（主源 fqt=1 前复权）：
+    1) 腾讯 fqkline（主源 qfq，2026-11-04 定稿首选即主源）：data.{code}.qfqday / hkfqkline / day
+    2) 东财 push2his kline（备源 fqt=1 前复权，仅腾讯失败时用一次）：
        data.klines = ["2025-01-02,开,收,高,低,量(手),额,振幅,涨跌幅,涨跌额,换手", ...]
        注意东财列序为 开,收,高,低；量单位为手，×100 换算成股与腾讯口径对齐。
-    2) 腾讯 fqkline（备源 qfq）：data.{code}.qfqday / hkfqkline / day
     """
     data = raw.get("data") or {}
     if isinstance(data, dict) and data.get("klines"):
